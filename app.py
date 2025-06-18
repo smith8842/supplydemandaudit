@@ -96,3 +96,73 @@ if uploaded_file and selected_sheet == "Purchase Orders":
     with st.expander("View Late Purchase Orders"):
         st.dataframe(df[df["Is Late"] == True])
 
+
+# ----------------------------------------
+# Section: Lead Time Accuracy Calculation
+# ----------------------------------------
+
+# Only calculate if both Purchase Orders and Item Settings sheets exist
+if uploaded_file and "Purchase Orders" in sheet_names and "Item Settings" in sheet_names:
+
+    # Load both sheets as DataFrames
+    po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders")
+    settings_df = pd.read_excel(uploaded_file, sheet_name="Item Settings")
+
+    st.subheader("📐 Lead Time Accuracy")
+
+    # ----------------------------------------
+    # Step 1: Ensure date fields are datetime type
+    # ----------------------------------------
+    po_df["Order Date"] = pd.to_datetime(po_df["Order Date"])
+    po_df["Received Date"] = pd.to_datetime(po_df["Received Date"])
+
+    # ----------------------------------------
+    # Step 2: Calculate Actual Lead Time for each PO
+    # ----------------------------------------
+    po_df["Actual Lead Time"] = (po_df["Received Date"] - po_df["Order Date"]).dt.days
+
+    # ----------------------------------------
+    # Step 3: Merge with Item Settings to get Planned Lead Time
+    # ----------------------------------------
+    merged_df = pd.merge(po_df, settings_df[["Item", "Lead Time (Days)"]],
+                         on="Item", how="inner")
+
+    # Drop rows with missing data
+    merged_df.dropna(subset=["Actual Lead Time", "Lead Time (Days)"], inplace=True)
+
+    # ----------------------------------------
+    # Step 4: Calculate accuracy per PO
+    # Accuracy = 1 - (abs(actual - planned) / planned)
+    # ----------------------------------------
+    merged_df["Lead Time Accuracy"] = 1 - (
+        abs(merged_df["Actual Lead Time"] - merged_df["Lead Time (Days)"]) /
+        merged_df["Lead Time (Days)"]
+    )
+
+    # Keep only valid accuracy values (exclude divide-by-zero or negatives)
+    merged_df = merged_df[merged_df["Lead Time Accuracy"].notnull()]
+    merged_df = merged_df[merged_df["Lead Time Accuracy"] >= 0]
+
+    # ----------------------------------------
+    # Step 5: Calculate overall average accuracy
+    # ----------------------------------------
+    if not merged_df.empty:
+        avg_accuracy = merged_df["Lead Time Accuracy"].mean() * 100
+    else:
+        avg_accuracy = 0.0
+
+    # ----------------------------------------
+    # Step 6: Display results in Streamlit UI
+    # ----------------------------------------
+    st.metric(
+        label="📏 Average Lead Time Accuracy",
+        value=f"{avg_accuracy:.1f}%",
+        delta="vs planned lead time",
+        delta_color="inverse" if avg_accuracy >= 90 else "normal"  # green if accurate
+    )
+
+    # ----------------------------------------
+    # Step 7: Optional - Expandable detail table
+    # ----------------------------------------
+    with st.expander("View Lead Time Details"):
+        st.dataframe(merged_df[["Item", "Actual Lead Time", "Lead Time (Days)", "Lead Time Accuracy"]])
