@@ -46,123 +46,71 @@ if uploaded_file:
 
 
 # ----------------------------------------
-# Section: Late Purchase Order Analysis
+# Section: Combined Metric Scorecard Display
 # ----------------------------------------
 
-# Check if the user selected the "Purchase Orders" sheet
-if uploaded_file and selected_sheet == "Purchase Orders":
-    # Load the selected sheet into a DataFrame
-    df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+# Only run if both required sheets exist
+if uploaded_file and "Purchase Orders" in sheet_names:
 
-    # Section header in the UI
-    st.subheader("🔍 Purchase Order Analysis")
-
-    # ----------------------------------------
-    # Step 1: Convert date columns to datetime
-    # ----------------------------------------
-    df["Required Date"] = pd.to_datetime(df["Required Date"])
-    df["Received Date"] = pd.to_datetime(df["Received Date"])
-
-    # ----------------------------------------
-    # Step 2: Flag each PO as late or on-time
-    # ----------------------------------------
-    df["Is Late"] = df["Received Date"] > df["Required Date"]
-
-    # ----------------------------------------
-    # Step 3: Calculate late PO statistics
-    # ----------------------------------------
-    total_pos = len(df)                # Total number of POs in the sheet
-    late_pos = df["Is Late"].sum()     # Count of POs where 'Is Late' is True
-
-    # Prevent division by zero if file is empty
-    if total_pos > 0:
-        late_po_percent = (late_pos / total_pos) * 100
-    else:
-        late_po_percent = 0.0
-
-    # ----------------------------------------
-    # Step 4: Display results in the Streamlit UI
-    # ----------------------------------------
-    st.metric(
-        label="📦 % of Late Purchase Orders",                 # Display title
-        value=f"{late_po_percent:.1f}%",                     # Main metric
-        delta=f"{late_pos} of {total_pos} POs",              # Extra detail below
-        delta_color="inverse" if late_po_percent < 10 else "normal"  # Green if good
-    )
-
-    # ----------------------------------------
-    # Step 5: Show detailed table of late POs (optional)
-    # ----------------------------------------
-    with st.expander("View Late Purchase Orders"):
-        st.dataframe(df[df["Is Late"] == True])
-
-
-# ----------------------------------------
-# Section: Lead Time Accuracy Calculation
-# ----------------------------------------
-
-# Only calculate if both Purchase Orders and Item Settings sheets exist
-if uploaded_file and "Purchase Orders" in sheet_names and "Item Settings" in sheet_names:
-
-    # Load both sheets as DataFrames
+    # Load needed sheets
     po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders")
-    settings_df = pd.read_excel(uploaded_file, sheet_name="Item Settings")
+    settings_df = pd.read_excel(uploaded_file, sheet_name="Item Settings") if "Item Settings" in sheet_names else None
 
-    st.subheader("📐 Lead Time Accuracy")
+    st.header("📈 SD Audit Scorecard")
 
-    # ----------------------------------------
-    # Step 1: Ensure date fields are datetime type
-    # ----------------------------------------
-    po_df["Order Date"] = pd.to_datetime(po_df["Order Date"])
-    po_df["Received Date"] = pd.to_datetime(po_df["Received Date"])
+    col1, col2 = st.columns(2)
 
-    # ----------------------------------------
-    # Step 2: Calculate Actual Lead Time for each PO
-    # ----------------------------------------
-    po_df["Actual Lead Time"] = (po_df["Received Date"] - po_df["Order Date"]).dt.days
+    # -------------------------------
+    # Metric 1: % Late Purchase Orders
+    # -------------------------------
+    with col1:
+        # Convert dates
+        po_df["Required Date"] = pd.to_datetime(po_df["Required Date"])
+        po_df["Received Date"] = pd.to_datetime(po_df["Received Date"])
+        po_df["Is Late"] = po_df["Received Date"] > po_df["Required Date"]
 
-    # ----------------------------------------
-    # Step 3: Merge with Item Settings to get Planned Lead Time
-    # ----------------------------------------
-    merged_df = pd.merge(po_df, settings_df[["Item", "Lead Time (Days)"]],
-                         on="Item", how="inner")
+        total_pos = len(po_df)
+        late_pos = po_df["Is Late"].sum()
+        late_percent = (late_pos / total_pos) * 100 if total_pos else 0
 
-    # Drop rows with missing data
-    merged_df.dropna(subset=["Actual Lead Time", "Lead Time (Days)"], inplace=True)
+        st.metric(
+            label="📦 % Late Purchase Orders",
+            value=f"{late_percent:.1f}%",
+            delta=f"{late_pos} of {total_pos} POs",
+            delta_color="inverse" if late_percent < 10 else "normal"
+        )
 
-    # ----------------------------------------
-    # Step 4: Calculate accuracy per PO
-    # Accuracy = 1 - (abs(actual - planned) / planned)
-    # ----------------------------------------
-    merged_df["Lead Time Accuracy"] = 1 - (
-        abs(merged_df["Actual Lead Time"] - merged_df["Lead Time (Days)"]) /
-        merged_df["Lead Time (Days)"]
-    )
+    # -------------------------------
+    # Metric 2: Lead Time Accuracy
+    # -------------------------------
+    with col2:
+        if settings_df is not None:
+            po_df["Order Date"] = pd.to_datetime(po_df["Order Date"])
+            po_df["Actual Lead Time"] = (po_df["Received Date"] - po_df["Order Date"]).dt.days
 
-    # Keep only valid accuracy values (exclude divide-by-zero or negatives)
-    merged_df = merged_df[merged_df["Lead Time Accuracy"].notnull()]
-    merged_df = merged_df[merged_df["Lead Time Accuracy"] >= 0]
+            merged_df = pd.merge(po_df, settings_df[["Item", "Lead Time (Days)"]],
+                                 on="Item", how="inner")
+            merged_df.dropna(subset=["Actual Lead Time", "Lead Time (Days)"], inplace=True)
 
-    # ----------------------------------------
-    # Step 5: Calculate overall average accuracy
-    # ----------------------------------------
-    if not merged_df.empty:
-        avg_accuracy = merged_df["Lead Time Accuracy"].mean() * 100
-    else:
-        avg_accuracy = 0.0
+            merged_df["Lead Time Accuracy"] = 1 - (
+                abs(merged_df["Actual Lead Time"] - merged_df["Lead Time (Days)"]) /
+                merged_df["Lead Time (Days)"]
+            )
+            merged_df = merged_df[merged_df["Lead Time Accuracy"] >= 0]
 
-    # ----------------------------------------
-    # Step 6: Display results in Streamlit UI
-    # ----------------------------------------
-    st.metric(
-        label="📏 Average Lead Time Accuracy",
-        value=f"{avg_accuracy:.1f}%",
-        delta="vs planned lead time",
-        delta_color="inverse" if avg_accuracy >= 90 else "normal"  # green if accurate
-    )
+            avg_accuracy = merged_df["Lead Time Accuracy"].mean() * 100 if not merged_df.empty else 0.0
 
-    # ----------------------------------------
-    # Step 7: Optional - Expandable detail table
-    # ----------------------------------------
-    with st.expander("View Lead Time Details"):
+            st.metric(
+                label="📏 Lead Time Accuracy",
+                value=f"{avg_accuracy:.1f}%",
+                delta="vs ERP Planned",
+                delta_color="inverse" if avg_accuracy >= 90 else "normal"
+            )
+
+with st.expander("🔍 View Late Purchase Orders"):
+    st.dataframe(po_df[po_df["Is Late"] == True])
+
+if settings_df is not None and not merged_df.empty:
+    with st.expander("🔍 View Lead Time Accuracy Details"):
         st.dataframe(merged_df[["Item", "Actual Lead Time", "Lead Time (Days)", "Lead Time Accuracy"]])
+
