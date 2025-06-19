@@ -1,116 +1,127 @@
 # ----------------------------------------
-# SD Audit - Streamlit App Entry Point
+# SD Audit - All Metrics Grouped by Category
 # ----------------------------------------
 
-# Import necessary libraries
 import streamlit as st
 import pandas as pd
 
-# ----------------------------------------
-# Section: Page Setup
-# ----------------------------------------
+st.set_page_config(page_title="SD Audit - All Metrics", layout="wide")
+st.title("📊 SD Audit - Full Supply & Demand Health Audit")
+st.markdown("Upload your Excel export from your ERP/MES system to analyze.")
 
-# Configure Streamlit page layout and metadata
-st.set_page_config(page_title="SD Audit - Supply & Demand Audit", layout="wide")
-st.title("📊 SD Audit - Supply & Demand Audit Tool")
-st.markdown("Upload your Excel export from Oracle ERP to get started.")
-
-# ----------------------------------------
-# Section: File Upload
-# ----------------------------------------
-
-# File uploader widget that accepts Excel files
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
-# ----------------------------------------
-# Section: Sheet Preview
-# ----------------------------------------
-
-# If a file has been uploaded, load it and show available sheets
 if uploaded_file:
-    try:
-        # Load Excel file into memory
-        xls = pd.ExcelFile(uploaded_file)
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_names = xls.sheet_names
+    st.success(f"✅ File uploaded. Sheets: {', '.join(sheet_names)}")
 
-        # List of sheet names
-        sheet_names = xls.sheet_names
-        st.success(f"✅ File uploaded. Sheets detected: {', '.join(sheet_names)}")
+    # Load relevant sheets
+    po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders") if "Purchase Orders" in sheet_names else None
+    wo_df = pd.read_excel(uploaded_file, sheet_name="Work Orders") if "Work Orders" in sheet_names else None
+    forecast_df = pd.read_excel(uploaded_file, sheet_name="Forecast") if "Forecast" in sheet_names else None
+    consumption_df = pd.read_excel(uploaded_file, sheet_name="Consumption") if "Consumption" in sheet_names else None
+    settings_df = pd.read_excel(uploaded_file, sheet_name="Item Settings") if "Item Settings" in sheet_names else None
+    mrp_df = pd.read_excel(uploaded_file, sheet_name="MRP Messages") if "MRP Messages" in sheet_names else None
 
-        # Allow user to preview any sheet
-        selected_sheet = st.selectbox("Select sheet to preview", sheet_names)
-        df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-        st.dataframe(df)
-
-    except Exception as e:
-        st.error(f"❌ Error reading file: {e}")
+    # Dictionary to collect results by category
+    results = {
+        "Procurement Metrics": {},
+        "Production Metrics": {},
+        "Forecasting Metrics": {},
+        "Planning Parameter Metrics": {},
+        "MRP Action Metrics": {}
+    }
 
     # ----------------------------------------
-    # Section: Combined Metric Scorecard Display
+    # Procurement Metrics
     # ----------------------------------------
+    if po_df is not None and settings_df is not None:
+        df = po_df.copy()
+        df["Required Date"] = pd.to_datetime(df["Required Date"])
+        df["Received Date"] = pd.to_datetime(df["Received Date"])
+        df["Order Date"] = pd.to_datetime(df["Order Date"])
+        df["Is Late"] = df["Received Date"] > df["Required Date"]
+        df["Actual LT"] = (df["Received Date"] - df["Order Date"]).dt.days
+        merged = pd.merge(df, settings_df[["Item", "Lead Time (Days)"]], on="Item", how="inner")
+        merged["Lead Time Accuracy"] = 1 - (abs(merged["Actual LT"] - merged["Lead Time (Days)"]) / merged["Lead Time (Days)"])
+        merged = merged[merged["Lead Time Accuracy"] >= 0]
 
-    if "Purchase Orders" in sheet_names:
-        # Load needed sheets
-        po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders")
-        settings_df = pd.read_excel(uploaded_file, sheet_name="Item Settings") if "Item Settings" in sheet_names else None
+        results["Procurement Metrics"]["% Late POs"] = df["Is Late"].mean() * 100 if not df.empty else 0
+        results["Procurement Metrics"]["Lead Time Accuracy"] = merged["Lead Time Accuracy"].mean() * 100 if not merged.empty else 0
 
-        st.header("📈 SD Audit Scorecard")
+    # ----------------------------------------
+    # Production Metrics
+    # ----------------------------------------
+    if wo_df is not None:
+        df = wo_df.copy()
+        df["Due Date"] = pd.to_datetime(df["Due Date"])
+        df["Completed Date"] = pd.to_datetime(df["Completed Date"])
+        df["Start Date"] = pd.to_datetime(df["Start Date"])
+        df["Is Late"] = df["Completed Date"] > df["Due Date"]
+        df["Actual LT"] = (df["Completed Date"] - df["Start Date"]).dt.days
 
-        # Use columns to show metrics side-by-side
-        col1, col2 = st.columns(2)
+        results["Production Metrics"]["% Late Work Orders"] = df["Is Late"].mean() * 100 if not df.empty else 0
+        results["Production Metrics"]["WO Lead Time Accuracy"] = df["Actual LT"].mean() if not df.empty else 0
 
-        # -------------------------------
-        # Metric 1: % Late Purchase Orders
-        # -------------------------------
-        with col1:
-            po_df["Required Date"] = pd.to_datetime(po_df["Required Date"])
-            po_df["Received Date"] = pd.to_datetime(po_df["Received Date"])
-            po_df["Is Late"] = po_df["Received Date"] > po_df["Required Date"]
+    # ----------------------------------------
+    # Forecasting Metrics
+    # ----------------------------------------
+    if forecast_df is not None and consumption_df is not None:
+        f = forecast_df.groupby("Item")["Forecast Qty"].sum()
+        c = consumption_df.groupby("Item")["Qty Used"].sum()
+        fc = pd.concat([f, c], axis=1).dropna()
+        fc["Accuracy"] = 1 - abs(fc["Forecast Qty"] - fc["Qty Used"]) / fc["Qty Used"]
 
-            total_pos = len(po_df)
-            late_pos = po_df["Is Late"].sum()
-            late_percent = (late_pos / total_pos) * 100 if total_pos else 0
+        v = forecast_df.groupby(["Item"])["Forecast Qty"].std()
 
-            st.metric(
-                label="📦 % Late Purchase Orders",
-                value=f"{late_percent:.1f}%",
-                delta=f"{late_pos} of {total_pos} POs",
-                delta_color="inverse" if late_percent < 10 else "normal"
-            )
+        results["Forecasting Metrics"]["Forecast Accuracy"] = fc["Accuracy"].mean() * 100 if not fc.empty else 0
+        results["Forecasting Metrics"]["Forecast Volatility"] = v.mean() if not v.empty else 0
 
-        # -------------------------------
-        # Metric 2: Lead Time Accuracy
-        # -------------------------------
-        with col2:
-            if settings_df is not None:
-                po_df["Order Date"] = pd.to_datetime(po_df["Order Date"])
-                po_df["Actual Lead Time"] = (po_df["Received Date"] - po_df["Order Date"]).dt.days
+    # ----------------------------------------
+    # Planning Parameter Metrics
+    # ----------------------------------------
+    if settings_df is not None and consumption_df is not None:
+        param_df = settings_df.copy()
+        c = consumption_df.groupby("Item")["Qty Used"].mean().rename("Avg Usage")
+        merged = pd.merge(param_df, c, on="Item", how="inner")
 
-                merged_df = pd.merge(po_df, settings_df[["Item", "Lead Time (Days)"]],
-                                     on="Item", how="inner")
-                merged_df.dropna(subset=["Actual Lead Time", "Lead Time (Days)"], inplace=True)
+        # Assume Planning Method column exists with "Reorder Point", "Min/Max", "MRP"
+        ro_df = merged[merged["Planning Method"].isin(["Reorder Point", "Min/Max"])].copy()
 
-                merged_df["Lead Time Accuracy"] = 1 - (
-                    abs(merged_df["Actual Lead Time"] - merged_df["Lead Time (Days)"]) /
-                    merged_df["Lead Time (Days)"]
-                )
-                merged_df = merged_df[merged_df["Lead Time Accuracy"] >= 0]
+        # Statistical recommendations
+        ro_df["Reco Reorder Point"] = ro_df["Avg Usage"] * 1.5  # simplified formula
+        ro_df["Reco Min"] = ro_df["Avg Usage"]
+        ro_df["Reco Max"] = ro_df["Avg Usage"] * 2
 
-                avg_accuracy = merged_df["Lead Time Accuracy"].mean() * 100 if not merged_df.empty else 0.0
+        def within_threshold(actual, recommended):
+            return abs(actual - recommended) / recommended <= 0.1
 
-                st.metric(
-                    label="📏 Lead Time Accuracy",
-                    value=f"{avg_accuracy:.1f}%",
-                    delta="vs ERP Planned",
-                    delta_color="inverse" if avg_accuracy >= 90 else "normal"
-                )
+        reorder_effective = ro_df.apply(lambda r: within_threshold(r["Reorder Point"], r["Reco Reorder Point"]), axis=1)
+        min_effective = ro_df.apply(lambda r: within_threshold(r["Min Qty"], r["Reco Min"]), axis=1)
+        max_effective = ro_df.apply(lambda r: within_threshold(r["Max Qty"], r["Reco Max"]), axis=1)
 
-        # ----------------------------------------
-        # Section: Optional Detail Tables
-        # ----------------------------------------
+        results["Planning Parameter Metrics"]["Safety Stock Coverage"] = ro_df["Safety Stock"].notna().mean() * 100
+        results["Planning Parameter Metrics"]["Min/Max Appropriateness"] = min(min_effective.mean(), max_effective.mean()) * 100
+        results["Planning Parameter Metrics"]["Reorder Point Effectiveness"] = reorder_effective.mean() * 100
 
-        with st.expander("🔍 View Late Purchase Orders"):
-            st.dataframe(po_df[po_df["Is Late"] == True])
+    # ----------------------------------------
+    # MRP Action Metrics
+    # ----------------------------------------
+    if mrp_df is not None:
+        df = mrp_df.copy()
+        df["Message Date"] = pd.to_datetime(df["Message Date"])
+        df["Action Date"] = pd.to_datetime(df["Action Date"])
+        df["Lead Time"] = (df["Action Date"] - df["Message Date"]).dt.days
 
-        if settings_df is not None and not merged_df.empty:
-            with st.expander("🔍 View Lead Time Accuracy Details"):
-                st.dataframe(merged_df[["Item", "Actual Lead Time", "Lead Time (Days)", "Lead Time Accuracy"]])
+        results["MRP Action Metrics"]["MRP Message Timeliness"] = df["Lead Time"].mean() if not df.empty else 0
+
+    # ----------------------------------------
+    # Scorecard Display
+    # ----------------------------------------
+    for category, metrics in results.items():
+        st.subheader(category)
+        cols = st.columns(len(metrics))
+        for col, (label, value) in zip(cols, metrics.items()):
+            col.metric(label, f"{value:.1f}")
+
