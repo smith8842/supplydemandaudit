@@ -15,6 +15,7 @@ if uploaded_file:
     xls = pd.ExcelFile(uploaded_file)
     sheet_names = xls.sheet_names
     st.success(f"✅ File uploaded. Sheets: {', '.join(sheet_names)}")
+    st.write("✅ Data Loaded — Streamlit logic running.")
 
     # Load relevant sheets
     po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders") if "Purchase Orders" in sheet_names else None
