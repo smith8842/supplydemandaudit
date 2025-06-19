@@ -17,6 +17,31 @@ if uploaded_file:
     st.success(f"✅ File uploaded. Sheets: {', '.join(sheet_names)}")
     st.write("✅ Data Loaded — Streamlit logic running.")
 
+    # Preview uploaded data in expanders
+with st.expander("📄 Purchase Orders"):
+    if po_df is not None:
+        st.dataframe(po_df)
+
+with st.expander("📄 Work Orders"):
+    if wo_df is not None:
+        st.dataframe(wo_df)
+
+with st.expander("📄 Forecast"):
+    if forecast_df is not None:
+        st.dataframe(forecast_df)
+
+with st.expander("📄 Consumption"):
+    if consumption_df is not None:
+        st.dataframe(consumption_df)
+
+with st.expander("📄 Item Settings"):
+    if settings_df is not None:
+        st.dataframe(settings_df)
+
+with st.expander("📄 MRP Messages"):
+    if mrp_df is not None:
+        st.dataframe(mrp_df)
+
     # Load relevant sheets
     po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders") if "Purchase Orders" in sheet_names else None
     wo_df = pd.read_excel(uploaded_file, sheet_name="Work Orders") if "Work Orders" in sheet_names else None
