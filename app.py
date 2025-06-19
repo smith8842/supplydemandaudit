@@ -5,50 +5,52 @@
 import streamlit as st
 import pandas as pd
 
+# Set up page
 st.set_page_config(page_title="SD Audit - All Metrics", layout="wide")
 st.title("📊 SD Audit - Full Supply & Demand Health Audit")
 st.markdown("Upload your Excel export from your ERP/MES system to analyze.")
 
+# Upload Excel file
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
 if uploaded_file:
+    # Load sheets
     xls = pd.ExcelFile(uploaded_file)
     sheet_names = xls.sheet_names
     st.success(f"✅ File uploaded. Sheets: {', '.join(sheet_names)}")
-    st.write("✅ Data Loaded — Streamlit logic running.")
 
-    # Preview uploaded data in expanders
-with st.expander("📄 Purchase Orders"):
-    if po_df is not None:
-        st.dataframe(po_df)
-
-with st.expander("📄 Work Orders"):
-    if wo_df is not None:
-        st.dataframe(wo_df)
-
-with st.expander("📄 Forecast"):
-    if forecast_df is not None:
-        st.dataframe(forecast_df)
-
-with st.expander("📄 Consumption"):
-    if consumption_df is not None:
-        st.dataframe(consumption_df)
-
-with st.expander("📄 Item Settings"):
-    if settings_df is not None:
-        st.dataframe(settings_df)
-
-with st.expander("📄 MRP Messages"):
-    if mrp_df is not None:
-        st.dataframe(mrp_df)
-
-    # Load relevant sheets
+    # Load each sheet into a DataFrame
     po_df = pd.read_excel(uploaded_file, sheet_name="Purchase Orders") if "Purchase Orders" in sheet_names else None
     wo_df = pd.read_excel(uploaded_file, sheet_name="Work Orders") if "Work Orders" in sheet_names else None
     forecast_df = pd.read_excel(uploaded_file, sheet_name="Forecast") if "Forecast" in sheet_names else None
     consumption_df = pd.read_excel(uploaded_file, sheet_name="Consumption") if "Consumption" in sheet_names else None
     settings_df = pd.read_excel(uploaded_file, sheet_name="Item Settings") if "Item Settings" in sheet_names else None
     mrp_df = pd.read_excel(uploaded_file, sheet_name="MRP Messages") if "MRP Messages" in sheet_names else None
+
+    # Preview uploaded data in expandable sections
+    with st.expander("📄 Purchase Orders"):
+        if po_df is not None:
+            st.dataframe(po_df)
+
+    with st.expander("📄 Work Orders"):
+        if wo_df is not None:
+            st.dataframe(wo_df)
+
+    with st.expander("📄 Forecast"):
+        if forecast_df is not None:
+            st.dataframe(forecast_df)
+
+    with st.expander("📄 Consumption"):
+        if consumption_df is not None:
+            st.dataframe(consumption_df)
+
+    with st.expander("📄 Item Settings"):
+        if settings_df is not None:
+            st.dataframe(settings_df)
+
+    with st.expander("📄 MRP Messages"):
+        if mrp_df is not None:
+            st.dataframe(mrp_df)
 
     # Dictionary to collect results by category
     results = {
@@ -59,6 +61,7 @@ with st.expander("📄 MRP Messages"):
         "MRP Action Metrics": {}
     }
 
+    
     # ----------------------------------------
     # Procurement Metrics
     # ----------------------------------------
