@@ -61,37 +61,54 @@ if uploaded_file:
         "MRP Action Metrics": {}
     }
 
+# --------------------
+# Metrics Calculations
+# ---------------------
     
-    # ----------------------------------------
+    # -------------------------------
     # Procurement Metrics
-    # ----------------------------------------
-    if po_df is not None and settings_df is not None:
-        df = po_df.copy()
-        df["Required Date"] = pd.to_datetime(df["Required Date"])
-        df["Received Date"] = pd.to_datetime(df["Received Date"])
-        df["Order Date"] = pd.to_datetime(df["Order Date"])
-        df["Is Late"] = df["Received Date"] > df["Required Date"]
-        df["Actual LT"] = (df["Received Date"] - df["Order Date"]).dt.days
-        merged = pd.merge(df, settings_df[["Item", "Lead Time (Days)"]], on="Item", how="inner")
-        merged["Lead Time Accuracy"] = 1 - (abs(merged["Actual LT"] - merged["Lead Time (Days)"]) / merged["Lead Time (Days)"])
-        merged = merged[merged["Lead Time Accuracy"] >= 0]
+    # -------------------------------
+    if po_df is not None and not po_df.empty:
+        # --- % Late Purchase Orders ---
+        po_df['Is Late'] = po_df['Received Date'] > po_df['Required Date']
+        po_late_percent = po_df['Is Late'].mean() * 100  # Every PO counts, even 1 day late
+    
+        # --- PO Lead Time Accuracy ---
+        po_df['Actual Lead Time'] = (po_df['Received Date'] - po_df['Order Date']).dt.days
+        po_avg_lead = po_df.groupby('Item').agg(
+            Actual_Lead_Time=('Actual Lead Time', 'mean'),
+            PO_Count=('Actual Lead Time', 'count')
+        ).reset_index()
+        po_avg_lead = po_avg_lead.merge(settings_df[['Item', 'Lead Time (Days)']], on='Item', how='left')
+        po_avg_lead = po_avg_lead[po_avg_lead['PO_Count'] >= 3]  # Only parts with 3+ POs
+        po_avg_lead['Accurate'] = abs(po_avg_lead['Actual_Lead_Time'] - po_avg_lead['Lead Time (Days)']) / po_avg_lead['Lead Time (Days)'] <= 0.10
+        po_lead_time_accuracy = po_avg_lead['Accurate'].mean() * 100 if not po_avg_lead.empty else None
+    else:
+        po_late_percent = None
+        po_lead_time_accuracy = None
 
-        results["Procurement Metrics"]["% Late POs"] = df["Is Late"].mean() * 100 if not df.empty else 0
-        results["Procurement Metrics"]["Lead Time Accuracy"] = merged["Lead Time Accuracy"].mean() * 100 if not merged.empty else 0
-
-    # ----------------------------------------
+    # -------------------------------
     # Production Metrics
-    # ----------------------------------------
-    if wo_df is not None:
-        df = wo_df.copy()
-        df["Due Date"] = pd.to_datetime(df["Due Date"])
-        df["Completed Date"] = pd.to_datetime(df["Completed Date"])
-        df["Start Date"] = pd.to_datetime(df["Start Date"])
-        df["Is Late"] = df["Completed Date"] > df["Due Date"]
-        df["Actual LT"] = (df["Completed Date"] - df["Start Date"]).dt.days
+    # -------------------------------
+    if wo_df is not None and not wo_df.empty:
+        # --- % Late Work Orders ---
+        wo_df['Is Late'] = wo_df['Completed Date'] > wo_df['Due Date']
+        wo_late_percent = wo_df['Is Late'].mean() * 100  # Every WO counts, even 1 day late
+    
+        # --- WO Lead Time Accuracy ---
+        wo_df['Actual Cycle Time'] = (wo_df['Completed Date'] - wo_df['Start Date']).dt.days
+        wo_avg_lead = wo_df.groupby('Item').agg(
+            Actual_Lead_Time=('Actual Cycle Time', 'mean'),
+            WO_Count=('Actual Cycle Time', 'count')
+        ).reset_index()
+        wo_avg_lead = wo_avg_lead.merge(settings_df[['Item', 'Lead Time (Days)']], on='Item', how='left')
+        wo_avg_lead = wo_avg_lead[wo_avg_lead['WO_Count'] >= 3]  # Only parts with 3+ WOs
+        wo_avg_lead['Accurate'] = abs(wo_avg_lead['Actual_Lead_Time'] - wo_avg_lead['Lead Time (Days)']) / wo_avg_lead['Lead Time (Days)'] <= 0.10
+        wo_lead_time_accuracy = wo_avg_lead['Accurate'].mean() * 100 if not wo_avg_lead.empty else None
+    else:
+        wo_late_percent = None
+        wo_lead_time_accuracy = None
 
-        results["Production Metrics"]["% Late Work Orders"] = df["Is Late"].mean() * 100 if not df.empty else 0
-        results["Production Metrics"]["WO Lead Time Accuracy"] = df["Actual LT"].mean() if not df.empty else 0
 
     # ----------------------------------------
     # Forecasting Metrics
@@ -145,11 +162,56 @@ if uploaded_file:
 
         results["MRP Action Metrics"]["MRP Message Timeliness"] = df["Lead Time"].mean() if not df.empty else 0
 
-    # ----------------------------------------
-    # Scorecard Display
-    # ----------------------------------------
+# ----------------------------------------
+# Scorecard Display
+# ----------------------------------------
+      st.title("🧾 Supply & Demand Audit Scorecard")
+    
+    # -------------------------------
+    # Procurement Metrics - UI
+    # -------------------------------
+    with st.container():
+        st.subheader("📦 Procurement Metrics")
+    
+        col1, col2 = st.columns(2)
+    
+        with col1:
+            if po_late_percent is not None:
+                st.metric(label="% Late Purchase Orders", value=f"{po_late_percent:.1f}%")
+    
+        with col2:
+            if po_lead_time_accuracy is not None:
+                st.metric(label="PO Lead Time Accuracy", value=f"{po_lead_time_accuracy:.1f}%")
+    
+    # -------------------------------
+    # Production Metrics - UI
+    # -------------------------------
+    with st.container():
+        st.subheader("🏭 Production Metrics")
+    
+        col1, col2 = st.columns(2)
+    
+        with col1:
+            if wo_late_percent is not None:
+                st.metric(label="% Late Work Orders", value=f"{wo_late_percent:.1f}%")
+    
+        with col2:
+            if wo_lead_time_accuracy is not None:
+                st.metric(label="WO Lead Time Accuracy", value=f"{wo_lead_time_accuracy:.1f}%")
+    
+    # -------------------------------
+    # Other Metrics (Loop for now)
+    # -------------------------------
+    # Loop through remaining categories (e.g., Forecasting, Planning Parameter, MRP Actions)
+    # that are stored in a dictionary called `results`
     for category, metrics in results.items():
+        # Skip Procurement and Production because they are rendered above
+        if category in ["📦 Procurement Metrics", "🏭 Production Metrics"]:
+            continue
+    
         st.subheader(category)
         cols = st.columns(len(metrics))
+    
         for col, (label, value) in zip(cols, metrics.items()):
             col.metric(label, f"{value:.1f}")
+
