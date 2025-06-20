@@ -209,9 +209,11 @@ if uploaded_file:
         if category in ["📦 Procurement Metrics", "🏭 Production Metrics"]:
             continue
     
-        st.subheader(category)
-        cols = st.columns(len(metrics))
+        # Only display category if it has metrics
+        if metrics:
+            st.subheader(category)
+            cols = st.columns(len(metrics))
     
-        for col, (label, value) in zip(cols, metrics.items()):
-            col.metric(label, f"{value:.1f}")
+            for col, (label, value) in zip(cols, metrics.items()):
+                col.metric(label, f"{value:.1f}")
 
