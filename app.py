@@ -165,7 +165,7 @@ if uploaded_file:
 # ----------------------------------------
 # Scorecard Display
 # ----------------------------------------
-      st.title("🧾 Supply & Demand Audit Scorecard")
+    st.title("🧾 Supply & Demand Audit Scorecard")
     
     # -------------------------------
     # Procurement Metrics - UI
