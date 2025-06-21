@@ -92,82 +92,72 @@ if uploaded_file:
     # -------------------------------
     # Procurement Metrics
     # -------------------------------
-    if po_df is not None and not po_df.empty:
-        # --- % Late Purchase Orders ---
-        po_df["Is Late"] = po_df["Received Date"] > po_df["Required Date"]
-        po_late_percent = (
-            po_df["Is Late"].mean() * 100
-        )  # Every PO counts, even 1 day late
+     # Filter only closed purchase orders
+    closed_pos = po_df[po_df["Status"].str.lower() == "closed"]
 
-        # --- PO Lead Time Accuracy ---
-        po_df["Actual Lead Time"] = (
-            po_df["Received Date"] - po_df["Order Date"]
-        ).dt.days
-        po_avg_lead = (
-            po_df.groupby("Item")
-            .agg(
-                Actual_Lead_Time=("Actual Lead Time", "mean"),
-                PO_Count=("Actual Lead Time", "count"),
-            )
-            .reset_index()
-        )
-        po_avg_lead = po_avg_lead.merge(
-            settings_df[["Item", "Lead Time (Days)"]], on="Item", how="left"
-        )
-        po_avg_lead = po_avg_lead[
-            po_avg_lead["PO_Count"] >= 3
-        ]  # Only parts with 3+ POs
-        po_avg_lead["Accurate"] = (
-            abs(po_avg_lead["Actual_Lead_Time"] - po_avg_lead["Lead Time (Days)"])
-            / po_avg_lead["Lead Time (Days)"]
-            <= 0.10
-        )
-        po_lead_time_accuracy = (
-            po_avg_lead["Accurate"].mean() * 100 if not po_avg_lead.empty else None
-        )
-    else:
-        po_late_percent = None
-        po_lead_time_accuracy = None
+    # % Late Purchase Orders
+    late_po_count = (closed_pos["Received Date"] > closed_pos["Required Date"]).sum()
+    total_closed_pos = len(closed_pos)
+    percent_late_po = (
+        (late_po_count / total_closed_pos) * 100 if total_closed_pos > 0 else 0
+    )
 
+    # PO Lead Time Accuracy (parts with ≥3 closed POs)
+    closed_pos["Actual Lead Time"] = (
+        closed_pos["Received Date"] - closed_pos["Order Date"]
+    ).dt.days
+    po_lead_time_accuracy = 0
+    valid_po_parts = 0
+
+    for part, group in closed_pos.groupby("Item"):
+        if len(group) >= 3:
+            avg_actual_lt = group["Actual Lead Time"].mean()
+            planned_lt = item_df.loc[item_df["Item"] == part, "Lead Time (Days)"].values
+            if len(planned_lt) > 0 and planned_lt[0] > 0:
+                if abs(avg_actual_lt - planned_lt[0]) / planned_lt[0] <= 0.10:
+                    po_lead_time_accuracy += 1
+                valid_po_parts += 1
+
+    po_lead_time_accuracy_percent = (
+        (po_lead_time_accuracy / valid_po_parts) * 100 if valid_po_parts > 0 else 0
+    )
     # -------------------------------
     # Production Metrics
     # -------------------------------
-    if wo_df is not None and not wo_df.empty:
-        # --- % Late Work Orders ---
-        wo_df["Is Late"] = wo_df["Completed Date"] > wo_df["Due Date"]
-        wo_late_percent = (
-            wo_df["Is Late"].mean() * 100
-        )  # Every WO counts, even 1 day late
+  # Filter only closed work orders
+    closed_wos = wo_df[wo_df["Status"].str.lower() == "closed"]
 
-        # --- WO Lead Time Accuracy ---
-        wo_df["Actual Cycle Time"] = (
-            wo_df["Completed Date"] - wo_df["Start Date"]
-        ).dt.days
-        wo_avg_lead = (
-            wo_df.groupby("Item")
-            .agg(
-                Actual_Lead_Time=("Actual Cycle Time", "mean"),
-                WO_Count=("Actual Cycle Time", "count"),
+    # % Late Work Orders
+    late_wo_count = (closed_wos["Completed Date"] > closed_wos["Due Date"]).sum()
+    total_closed_wos = len(closed_wos)
+    percent_late_wo = (
+        (late_wo_count / total_closed_wos) * 100 if total_closed_wos > 0 else 0
+    )
+
+    # WO Lead Time Accuracy (parts with ≥3 closed WOs)
+    closed_wos["Actual Cycle Time"] = (
+        closed_wos["Completed Date"] - closed_wos["Start Date"]
+    ).dt.days
+    wo_lead_time_accuracy = 0
+    valid_wo_parts = 0
+
+    for part, group in closed_wos.groupby("Item"):
+        if len(group) >= 3:
+            avg_actual_cycle = group["Actual Cycle Time"].mean()
+            avg_planned_cycle = (
+                group["Due Date"].sub(group["Start Date"]).dt.days.mean()
             )
-            .reset_index()
-        )
-        wo_avg_lead = wo_avg_lead.merge(
-            settings_df[["Item", "Lead Time (Days)"]], on="Item", how="left"
-        )
-        wo_avg_lead = wo_avg_lead[
-            wo_avg_lead["WO_Count"] >= 3
-        ]  # Only parts with 3+ WOs
-        wo_avg_lead["Accurate"] = (
-            abs(wo_avg_lead["Actual_Lead_Time"] - wo_avg_lead["Lead Time (Days)"])
-            / wo_avg_lead["Lead Time (Days)"]
-            <= 0.10
-        )
-        wo_lead_time_accuracy = (
-            wo_avg_lead["Accurate"].mean() * 100 if not wo_avg_lead.empty else None
-        )
-    else:
-        wo_late_percent = None
-        wo_lead_time_accuracy = None
+            if avg_planned_cycle > 0:
+                if (
+                    abs(avg_actual_cycle - avg_planned_cycle) / avg_planned_cycle
+                    <= 0.10
+                ):
+                    wo_lead_time_accuracy += 1
+                valid_wo_parts += 1
+
+    wo_lead_time_accuracy_percent = (
+        (wo_lead_time_accuracy / valid_wo_parts) * 100 if valid_wo_parts > 0 else 0
+    )
 
     # ----------------------------------------
     # Forecasting Metrics
