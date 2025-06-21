@@ -98,7 +98,7 @@ if uploaded_file:
     # % Late Purchase Orders
     late_po_count = (closed_pos["Received Date"] > closed_pos["Required Date"]).sum()
     total_closed_pos = len(closed_pos)
-    percent_late_po = (
+    po_late_percent = (
         (late_po_count / total_closed_pos) * 100 if total_closed_pos > 0 else 0
     )
 
@@ -130,7 +130,7 @@ if uploaded_file:
     # % Late Work Orders
     late_wo_count = (closed_wos["Completed Date"] > closed_wos["Due Date"]).sum()
     total_closed_wos = len(closed_wos)
-    percent_late_wo = (
+    wo_late_percent = (
         (late_wo_count / total_closed_wos) * 100 if total_closed_wos > 0 else 0
     )
 
