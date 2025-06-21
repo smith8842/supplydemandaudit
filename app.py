@@ -112,7 +112,7 @@ if uploaded_file:
     for part, group in closed_pos.groupby("Item"):
         if len(group) >= 3:
             avg_actual_lt = group["Actual Lead Time"].mean()
-            planned_lt = item_df.loc[item_df["Item"] == part, "Lead Time (Days)"].values
+            planned_lt = settings_df.loc[settings_df["Item"] == part, "Lead Time (Days)"].values
             if len(planned_lt) > 0 and planned_lt[0] > 0:
                 if abs(avg_actual_lt - planned_lt[0]) / planned_lt[0] <= 0.10:
                     po_lead_time_accuracy += 1
