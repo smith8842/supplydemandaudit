@@ -252,9 +252,9 @@ if uploaded_file:
                 )
 
         with col2:
-            if po_lead_time_accuracy is not None:
+            if po_lead_time_accuracy_percent is not None:
                 st.metric(
-                    label="PO Lead Time Accuracy", value=f"{po_lead_time_accuracy:.1f}%"
+                    label="PO Lead Time Accuracy", value=f"{po_lead_time_accuracy_percent:.1f}%"
                 )
 
     # -------------------------------
@@ -270,9 +270,9 @@ if uploaded_file:
                 st.metric(label="% Late Work Orders", value=f"{wo_late_percent:.1f}%")
 
         with col2:
-            if wo_lead_time_accuracy is not None:
+            if wo_lead_time_accuracy_percent is not None:
                 st.metric(
-                    label="WO Lead Time Accuracy", value=f"{wo_lead_time_accuracy:.1f}%"
+                    label="WO Lead Time Accuracy", value=f"{wo_lead_time_accuracy_percent:.1f}%"
                 )
 
     # -------------------------------
