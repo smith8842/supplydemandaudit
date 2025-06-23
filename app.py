@@ -40,7 +40,7 @@ if uploaded_file:
         if "Consumption" in sheet_names
         else None
     )
-    settings_df = (
+    item_settings_df = (
         pd.read_excel(uploaded_file, sheet_name="Item Settings")
         if "Item Settings" in sheet_names
         else None
@@ -48,6 +48,16 @@ if uploaded_file:
     mrp_df = (
         pd.read_excel(uploaded_file, sheet_name="MRP Messages")
         if "MRP Messages" in sheet_names
+        else None
+    )
+    demand_df = (
+        pd.read_excel(uploaded_file, sheet_name="Demand Plan")
+        if "Demand Plan" in sheet_names
+        else None
+    )
+    inventory_df = (
+        pd.read_excel(uploaded_file, sheet_name="Inventory Levels")
+        if "Demand Plan" in sheet_names
         else None
     )
 
@@ -69,8 +79,8 @@ if uploaded_file:
             st.dataframe(consumption_df)
 
     with st.expander("📄 Item Settings"):
-        if settings_df is not None:
-            st.dataframe(settings_df)
+        if item_settings_df is not None:
+            st.dataframe(item_settings_df)
 
     with st.expander("📄 MRP Messages"):
         if mrp_df is not None:
@@ -85,14 +95,90 @@ if uploaded_file:
         "MRP Action Metrics": {},
     }
 
+    
+
     # --------------------
     # Metrics Calculations
     # ---------------------
 
-    # -------------------------------
-    # Procurement Metrics
-    # -------------------------------
-     # Filter only closed purchase orders
+    # =========================
+    # WHAT METRICS CALCULATION
+    # =========================
+
+    # ---------------------
+    # Material Shortages
+    # ---------------------
+    shortages = 0
+    total_items = 0
+    for part in demand_df["Item"].unique():
+        part_demand = demand_df[demand_df["Item"] == part]["Demand Quantity"].sum()
+        part_on_hand = inventory_df[inventory_df["Item"] == part][
+            "On Hand Quantity"
+        ].sum()
+        part_supply = po_df[(po_df["Item"] == part) & (po_df["Status"] != "Closed")][
+            "Open Quantity"
+        ].sum()
+        total_supply = part_on_hand + part_supply
+
+        if part_demand > 0:
+            total_items += 1
+            if total_supply < part_demand:
+                shortages += 1
+
+    material_shortage_percent = (
+        (shortages / total_items) * 100 if total_items > 0 else None
+    )
+
+    # ---------------------
+    # Excess Inventory
+    # ---------------------
+    excess_count = 0
+    total_items_ex = 0
+    for part in inventory_df["Item"].unique():
+        on_hand = inventory_df[inventory_df["Item"] == part]["On Hand Quantity"].sum()
+        demand = demand_df[demand_df["Item"] == part]["Demand Quantity"].sum()
+        safety_stock = item_settings_df[item_settings_df["Item"] == part]["Safety Stock"].values
+        max_qty = item_settings_df[item_settings_df["Item"] == part]["Max"].values
+
+        threshold = 0
+        if len(safety_stock) > 0:
+            threshold = max(threshold, safety_stock[0])
+        if len(max_qty) > 0:
+            threshold = max(threshold, max_qty[0])
+
+        if demand > 0:
+            total_items_ex += 1
+            if on_hand > (demand + threshold):
+                excess_count += 1
+
+    excess_inventory_percent = (
+        (excess_count / total_items_ex) * 100 if total_items_ex > 0 else None
+    )
+
+    # Inventory Turns (based on trailing consumption)
+    turns_data = []
+    for part in inventory_df["Item"].unique():
+        on_hand = inventory_df[inventory_df["Item"] == part]["On Hand Quantity"].sum()
+        consumption = consumption_df[consumption_df["Item"] == part][
+            "Consumed Quantity"
+        ].sum()
+        avg_monthly_consumption = consumption / 3  # assuming 3 months
+        annual_consumption = avg_monthly_consumption * 12
+        if on_hand > 0:
+            turns = annual_consumption / on_hand
+            turns_data.append(turns)
+
+    avg_inventory_turns = sum(turns_data) / len(turns_data) if turns_data else None
+
+    results["WHAT Metrics"] = {
+    "Material Shortages": material_shortage_percent,
+    "Excess Inventory": excess_inventory_percent,
+    "Inventory Turns": avg_inventory_turns,
+    }
+
+
+    # --- Procurement Metrics ---
+    # Filter only closed purchase orders
     closed_pos = po_df[po_df["Status"].str.lower() == "closed"]
 
     # % Late Purchase Orders
@@ -112,7 +198,9 @@ if uploaded_file:
     for part, group in closed_pos.groupby("Item"):
         if len(group) >= 3:
             avg_actual_lt = group["Actual Lead Time"].mean()
-            planned_lt = settings_df.loc[settings_df["Item"] == part, "Lead Time (Days)"].values
+            planned_lt = item_settings_df.loc[
+                item_settings_df["Item"] == part, "Lead Time (Days)"
+            ].values
             if len(planned_lt) > 0 and planned_lt[0] > 0:
                 if abs(avg_actual_lt - planned_lt[0]) / planned_lt[0] <= 0.10:
                     po_lead_time_accuracy += 1
@@ -121,10 +209,9 @@ if uploaded_file:
     po_lead_time_accuracy_percent = (
         (po_lead_time_accuracy / valid_po_parts) * 100 if valid_po_parts > 0 else 0
     )
-    # -------------------------------
-    # Production Metrics
-    # -------------------------------
-  # Filter only closed work orders
+
+    # --- Production Metrics ---
+    # Filter only closed work orders
     closed_wos = wo_df[wo_df["Status"].str.lower() == "closed"]
 
     # % Late Work Orders
@@ -180,8 +267,8 @@ if uploaded_file:
     # ----------------------------------------
     # Planning Parameter Metrics
     # ----------------------------------------
-    if settings_df is not None and consumption_df is not None:
-        param_df = settings_df.copy()
+    if item_settings_df is not None and consumption_df is not None:
+        param_df = item_settings_df.copy()
         c = consumption_df.groupby("Item")["Qty Used"].mean().rename("Avg Usage")
         merged = pd.merge(param_df, c, on="Item", how="inner")
 
@@ -254,7 +341,8 @@ if uploaded_file:
         with col2:
             if po_lead_time_accuracy_percent is not None:
                 st.metric(
-                    label="PO Lead Time Accuracy", value=f"{po_lead_time_accuracy_percent:.1f}%"
+                    label="PO Lead Time Accuracy",
+                    value=f"{po_lead_time_accuracy_percent:.1f}%",
                 )
 
     # -------------------------------
@@ -272,8 +360,20 @@ if uploaded_file:
         with col2:
             if wo_lead_time_accuracy_percent is not None:
                 st.metric(
-                    label="WO Lead Time Accuracy", value=f"{wo_lead_time_accuracy_percent:.1f}%"
+                    label="WO Lead Time Accuracy",
+                    value=f"{wo_lead_time_accuracy_percent:.1f}%",
                 )
+
+    # -------------------
+    # WHAT Metrics
+    # -------------------
+    with st.expander("🔍 WHAT Metrics — What is going right or wrong?"):
+        if material_shortage_percent is not None:
+            st.metric("Material Shortages", f"{material_shortage_percent:.1f}%")
+        if excess_inventory_percent is not None:
+            st.metric("Excess Inventory", f"{excess_inventory_percent:.1f}%")
+        if avg_inventory_turns is not None:
+            st.metric("Inventory Turns", f"{avg_inventory_turns:.1f}")
 
     # -------------------------------
     # Other Metrics (Loop for now)
