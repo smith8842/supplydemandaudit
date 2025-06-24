@@ -98,6 +98,9 @@ if uploaded_file:
     what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
     avg_turns = what_df["INVENTORY_TURNS"].mean()
 
+    # Add shortage column back to table
+    what_df["SHORTAGE"] = what_df.index.isin(shortage_part_ids)
+
     # Show results in UI
     with st.expander("📊 WHAT Metrics Results"):
         col1, col2, col3 = st.columns(3)
