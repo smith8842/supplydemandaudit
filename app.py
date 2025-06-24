@@ -1,5 +1,5 @@
 # ----------------------------------------
-# SD Audit - All Metrics Grouped by Category
+# SD Audit - All Metrics Grouped by Oracle-Aligned Schema
 # ----------------------------------------
 
 import streamlit as st
@@ -8,7 +8,7 @@ import pandas as pd
 # Set up page
 st.set_page_config(page_title="SD Audit - All Metrics", layout="wide")
 st.title("📊 SD Audit - Full Supply & Demand Health Audit")
-st.markdown("Upload your Excel export from your ERP/MES system to analyze.")
+st.markdown("Upload your Oracle-exported Excel file to analyze.")
 
 # Upload Excel file
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
@@ -19,376 +19,82 @@ if uploaded_file:
     sheet_names = xls.sheet_names
     st.success(f"✅ File uploaded. Sheets: {', '.join(sheet_names)}")
 
-    # Load each sheet into a DataFrame
-    po_df = (
-        pd.read_excel(uploaded_file, sheet_name="Purchase Orders")
-        if "Purchase Orders" in sheet_names
-        else None
-    )
-    wo_df = (
-        pd.read_excel(uploaded_file, sheet_name="Work Orders")
-        if "Work Orders" in sheet_names
-        else None
-    )
-    forecast_df = (
-        pd.read_excel(uploaded_file, sheet_name="Forecast")
-        if "Forecast" in sheet_names
-        else None
-    )
-    consumption_df = (
-        pd.read_excel(uploaded_file, sheet_name="Consumption")
-        if "Consumption" in sheet_names
-        else None
-    )
-    item_settings_df = (
-        pd.read_excel(uploaded_file, sheet_name="Item Settings")
-        if "Item Settings" in sheet_names
-        else None
-    )
-    mrp_df = (
-        pd.read_excel(uploaded_file, sheet_name="MRP Messages")
-        if "MRP Messages" in sheet_names
-        else None
-    )
-    demand_df = (
-        pd.read_excel(uploaded_file, sheet_name="Demand Plan")
-        if "Demand Plan" in sheet_names
-        else None
-    )
-    inventory_df = (
-        pd.read_excel(uploaded_file, sheet_name="Inventory Levels")
-        if "Demand Plan" in sheet_names
-        else None
-    )
+    # Load Oracle-aligned sheets
+    part_master_df = pd.read_excel(uploaded_file, sheet_name="PART_MASTER")
+    po_df = pd.read_excel(uploaded_file, sheet_name="PURCHASE_ORDER_LINES")
+    wo_df = pd.read_excel(uploaded_file, sheet_name="WORK_ORDERS")
+    mrp_df = pd.read_excel(uploaded_file, sheet_name="MRP_SUGGESTIONS")
+    forecast_df = pd.read_excel(uploaded_file, sheet_name="FORECAST")
+    consumption_df = pd.read_excel(uploaded_file, sheet_name="ACTUAL_CONSUMPTION")
+    scrap_df = pd.read_excel(uploaded_file, sheet_name="SCRAP")
+    inventory_df = pd.read_excel(uploaded_file, sheet_name="INVENTORY_BALANCES")
 
-    # Preview uploaded data in expandable sections
-    with st.expander("📄 Purchase Orders"):
-        if po_df is not None:
-            st.dataframe(po_df)
+    # Display sheet previews
+    for name, df in {
+        "PART_MASTER": part_master_df,
+        "PURCHASE_ORDER_LINES": po_df,
+        "WORK_ORDERS": wo_df,
+        "MRP_SUGGESTIONS": mrp_df,
+        "FORECAST": forecast_df,
+        "ACTUAL_CONSUMPTION": consumption_df,
+        "SCRAP": scrap_df,
+        "INVENTORY_BALANCES": inventory_df,
+    }.items():
+        with st.expander(f"📄 {name}"):
+            st.dataframe(df.head())
 
-    with st.expander("📄 Work Orders"):
-        if wo_df is not None:
-            st.dataframe(wo_df)
+    # --- WHAT Metrics: Supply Planning Results ---
+    st.markdown("---")
+    st.header("🔢 WHAT - Supply Planning Results")
 
-    with st.expander("📄 Forecast"):
-        if forecast_df is not None:
-            st.dataframe(forecast_df)
+    latest_demand = forecast_df.groupby("PART_ID").agg({"QUANTITY": "sum"}).rename(columns={"QUANTITY": "DEMAND"})
+    inventory_agg = inventory_df.groupby("PART_ID").agg({"ON_HAND_QUANTITY": "sum"})
+    what_df = part_master_df.set_index("PART_ID").join([latest_demand, inventory_agg])
+    what_df = what_df.fillna(0)
 
-    with st.expander("📄 Consumption"):
-        if consumption_df is not None:
-            st.dataframe(consumption_df)
+    what_df["SHORTAGE"] = what_df["ON_HAND_QUANTITY"] < what_df["DEMAND"]
+    shortage_percent = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
 
-    with st.expander("📄 Item Settings"):
-        if item_settings_df is not None:
-            st.dataframe(item_settings_df)
+    what_df["EXCESS"] = (what_df["ON_HAND_QUANTITY"] > (what_df["DEMAND"] + what_df["SAFETY_STOCK"])) | (what_df["ON_HAND_QUANTITY"] > what_df["MAX_QTY"])
+    excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
 
-    with st.expander("📄 MRP Messages"):
-        if mrp_df is not None:
-            st.dataframe(mrp_df)
+    trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
+    what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
+    what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
+    avg_turns = what_df["INVENTORY_TURNS"].mean()
 
-    # Dictionary to collect results by category
-    results = {
-        "Procurement Metrics": {},
-        "Production Metrics": {},
-        "Forecasting Metrics": {},
-        "Planning Parameter Metrics": {},
-        "MRP Action Metrics": {},
-    }
+    with st.expander("📊 WHAT Metrics Results"):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("% of Parts with Material Shortages", f"{shortage_percent:.1f}%")
+        col2.metric("% of Parts with Excess Inventory", f"{excess_percent:.1f}%")
+        col3.metric("Avg Inventory Turns", f"{avg_turns:.1f}")
+        st.dataframe(what_df.reset_index())
 
-    
+    # --- WHY Metrics: Root Cause ---
+    st.markdown("---")
+    st.header("🔎 WHY - Root Cause Metrics")
 
-    # --------------------
-    # Metrics Calculations
-    # ---------------------
+    # % Late Purchase Orders (closed only)
+    closed_po_df = po_df[po_df["STATUS"].str.lower() == "closed"]
+    closed_po_df["LATE"] = pd.to_datetime(closed_po_df["RECEIPT_DATE"]) > pd.to_datetime(closed_po_df["NEED_BY_DATE"])
+    po_late_percent = (closed_po_df["LATE"].sum() / len(closed_po_df)) * 100 if len(closed_po_df) > 0 else 0
 
-    # =========================
-    # WHAT METRICS CALCULATION
-    # =========================
+    # % Late Work Orders (closed only)
+    closed_wo_df = wo_df[wo_df["STATUS"].str.lower() == "closed"]
+    closed_wo_df["LATE"] = pd.to_datetime(closed_wo_df["COMPLETION_DATE"]) > pd.to_datetime(closed_wo_df["DUE_DATE"])
+    wo_late_percent = (closed_wo_df["LATE"].sum() / len(closed_wo_df)) * 100 if len(closed_wo_df) > 0 else 0
 
-    # ---------------------
-    # Material Shortages
-    # ---------------------
-    shortages = 0
-    total_items = 0
-    for part in demand_df["Item"].unique():
-        part_demand = demand_df[demand_df["Item"] == part]["Demand Quantity"].sum()
-        part_on_hand = inventory_df[inventory_df["Item"] == part][
-            "On Hand Quantity"
-        ].sum()
-        part_supply = po_df[(po_df["Item"] == part) & (po_df["Status"] != "Closed")][
-            "Open Quantity"
-        ].sum()
-        total_supply = part_on_hand + part_supply
-
-        if part_demand > 0:
-            total_items += 1
-            if total_supply < part_demand:
-                shortages += 1
-
-    material_shortage_percent = (
-        (shortages / total_items) * 100 if total_items > 0 else None
-    )
-
-    # ---------------------
-    # Excess Inventory
-    # ---------------------
-    excess_count = 0
-    total_items_ex = 0
-    for part in inventory_df["Item"].unique():
-        on_hand = inventory_df[inventory_df["Item"] == part]["On Hand Quantity"].sum()
-        demand = demand_df[demand_df["Item"] == part]["Demand Quantity"].sum()
-        safety_stock = item_settings_df[item_settings_df["Item"] == part]["Safety Stock"].values
-        max_qty = item_settings_df[item_settings_df["Item"] == part]["Max"].values
-
-        threshold = 0
-        if len(safety_stock) > 0:
-            threshold = max(threshold, safety_stock[0])
-        if len(max_qty) > 0:
-            threshold = max(threshold, max_qty[0])
-
-        if demand > 0:
-            total_items_ex += 1
-            if on_hand > (demand + threshold):
-                excess_count += 1
-
-    excess_inventory_percent = (
-        (excess_count / total_items_ex) * 100 if total_items_ex > 0 else None
-    )
-
-    # Inventory Turns (based on trailing consumption)
-    turns_data = []
-    for part in inventory_df["Item"].unique():
-        on_hand = inventory_df[inventory_df["Item"] == part]["On Hand Quantity"].sum()
-        consumption = consumption_df[consumption_df["Item"] == part][
-            "Consumed Quantity"
-        ].sum()
-        avg_monthly_consumption = consumption / 3  # assuming 3 months
-        annual_consumption = avg_monthly_consumption * 12
-        if on_hand > 0:
-            turns = annual_consumption / on_hand
-            turns_data.append(turns)
-
-    avg_inventory_turns = sum(turns_data) / len(turns_data) if turns_data else None
-
-    results["WHAT Metrics"] = {
-    "Material Shortages": material_shortage_percent,
-    "Excess Inventory": excess_inventory_percent,
-    "Inventory Turns": avg_inventory_turns,
-    }
-
-
-    # --- Procurement Metrics ---
-    # Filter only closed purchase orders
-    closed_pos = po_df[po_df["Status"].str.lower() == "closed"]
-
-    # % Late Purchase Orders
-    late_po_count = (closed_pos["Received Date"] > closed_pos["Required Date"]).sum()
-    total_closed_pos = len(closed_pos)
-    po_late_percent = (
-        (late_po_count / total_closed_pos) * 100 if total_closed_pos > 0 else 0
-    )
-
-    # PO Lead Time Accuracy (parts with ≥3 closed POs)
-    closed_pos["Actual Lead Time"] = (
-        closed_pos["Received Date"] - closed_pos["Order Date"]
-    ).dt.days
-    po_lead_time_accuracy = 0
-    valid_po_parts = 0
-
-    for part, group in closed_pos.groupby("Item"):
-        if len(group) >= 3:
-            avg_actual_lt = group["Actual Lead Time"].mean()
-            planned_lt = item_settings_df.loc[
-                item_settings_df["Item"] == part, "Lead Time (Days)"
-            ].values
-            if len(planned_lt) > 0 and planned_lt[0] > 0:
-                if abs(avg_actual_lt - planned_lt[0]) / planned_lt[0] <= 0.10:
-                    po_lead_time_accuracy += 1
-                valid_po_parts += 1
-
-    po_lead_time_accuracy_percent = (
-        (po_lead_time_accuracy / valid_po_parts) * 100 if valid_po_parts > 0 else 0
-    )
-
-    # --- Production Metrics ---
-    # Filter only closed work orders
-    closed_wos = wo_df[wo_df["Status"].str.lower() == "closed"]
-
-    # % Late Work Orders
-    late_wo_count = (closed_wos["Completed Date"] > closed_wos["Due Date"]).sum()
-    total_closed_wos = len(closed_wos)
-    wo_late_percent = (
-        (late_wo_count / total_closed_wos) * 100 if total_closed_wos > 0 else 0
-    )
-
-    # WO Lead Time Accuracy (parts with ≥3 closed WOs)
-    closed_wos["Actual Cycle Time"] = (
-        closed_wos["Completed Date"] - closed_wos["Start Date"]
-    ).dt.days
-    wo_lead_time_accuracy = 0
-    valid_wo_parts = 0
-
-    for part, group in closed_wos.groupby("Item"):
-        if len(group) >= 3:
-            avg_actual_cycle = group["Actual Cycle Time"].mean()
-            avg_planned_cycle = (
-                group["Due Date"].sub(group["Start Date"]).dt.days.mean()
-            )
-            if avg_planned_cycle > 0:
-                if (
-                    abs(avg_actual_cycle - avg_planned_cycle) / avg_planned_cycle
-                    <= 0.10
-                ):
-                    wo_lead_time_accuracy += 1
-                valid_wo_parts += 1
-
-    wo_lead_time_accuracy_percent = (
-        (wo_lead_time_accuracy / valid_wo_parts) * 100 if valid_wo_parts > 0 else 0
-    )
-
-    # ----------------------------------------
-    # Forecasting Metrics
-    # ----------------------------------------
-    if forecast_df is not None and consumption_df is not None:
-        f = forecast_df.groupby("Item")["Forecast Qty"].sum()
-        c = consumption_df.groupby("Item")["Qty Used"].sum()
-        fc = pd.concat([f, c], axis=1).dropna()
-        fc["Accuracy"] = 1 - abs(fc["Forecast Qty"] - fc["Qty Used"]) / fc["Qty Used"]
-
-        v = forecast_df.groupby(["Item"])["Forecast Qty"].std()
-
-        results["Forecasting Metrics"]["Forecast Accuracy"] = (
-            fc["Accuracy"].mean() * 100 if not fc.empty else 0
-        )
-        results["Forecasting Metrics"]["Forecast Volatility"] = (
-            v.mean() if not v.empty else 0
-        )
-
-    # ----------------------------------------
-    # Planning Parameter Metrics
-    # ----------------------------------------
-    if item_settings_df is not None and consumption_df is not None:
-        param_df = item_settings_df.copy()
-        c = consumption_df.groupby("Item")["Qty Used"].mean().rename("Avg Usage")
-        merged = pd.merge(param_df, c, on="Item", how="inner")
-
-        # Assume Planning Method column exists with "Reorder Point", "Min/Max", "MRP"
-        ro_df = merged[
-            merged["Planning Method"].isin(["Reorder Point", "Min/Max"])
-        ].copy()
-
-        # Statistical recommendations
-        ro_df["Reco Reorder Point"] = ro_df["Avg Usage"] * 1.5  # simplified formula
-        ro_df["Reco Min"] = ro_df["Avg Usage"]
-        ro_df["Reco Max"] = ro_df["Avg Usage"] * 2
-
-        def within_threshold(actual, recommended):
-            return abs(actual - recommended) / recommended <= 0.1
-
-        reorder_effective = ro_df.apply(
-            lambda r: within_threshold(r["Reorder Point"], r["Reco Reorder Point"]),
-            axis=1,
-        )
-        min_effective = ro_df.apply(
-            lambda r: within_threshold(r["Min Qty"], r["Reco Min"]), axis=1
-        )
-        max_effective = ro_df.apply(
-            lambda r: within_threshold(r["Max Qty"], r["Reco Max"]), axis=1
-        )
-
-        results["Planning Parameter Metrics"]["Safety Stock Coverage"] = (
-            ro_df["Safety Stock"].notna().mean() * 100
-        )
-        results["Planning Parameter Metrics"]["Min/Max Appropriateness"] = (
-            min(min_effective.mean(), max_effective.mean()) * 100
-        )
-        results["Planning Parameter Metrics"]["Reorder Point Effectiveness"] = (
-            reorder_effective.mean() * 100
-        )
-
-    # ----------------------------------------
-    # MRP Action Metrics
-    # ----------------------------------------
-    if mrp_df is not None:
-        df = mrp_df.copy()
-        df["Message Date"] = pd.to_datetime(df["Message Date"])
-        df["Action Date"] = pd.to_datetime(df["Action Date"])
-        df["Lead Time"] = (df["Action Date"] - df["Message Date"]).dt.days
-
-        results["MRP Action Metrics"]["MRP Message Timeliness"] = (
-            df["Lead Time"].mean() if not df.empty else 0
-        )
-
-    # ----------------------------------------
-    # Scorecard Display
-    # ----------------------------------------
-    st.title("🧾 Supply & Demand Audit Scorecard")
-
-    # -------------------------------
-    # Procurement Metrics - UI
-    # -------------------------------
-    with st.container():
-        st.subheader("📦 Procurement Metrics")
-
+    with st.expander("📊 WHY Metrics Results"):
         col1, col2 = st.columns(2)
+        col1.metric("% Late Purchase Orders", f"{po_late_percent:.1f}%")
+        col2.metric("% Late Work Orders", f"{wo_late_percent:.1f}%")
+        st.dataframe(pd.concat([
+            closed_po_df[["PART_ID", "RECEIPT_DATE", "NEED_BY_DATE", "LATE"]].head(),
+            closed_wo_df[["PART_ID", "COMPLETION_DATE", "DUE_DATE", "LATE"]].head()
+        ], keys=["PO Sample", "WO Sample"]))
 
-        with col1:
-            if po_late_percent is not None:
-                st.metric(
-                    label="% Late Purchase Orders", value=f"{po_late_percent:.1f}%"
-                )
+    # --- HOW Placeholder ---
+    st.markdown("---")
+    st.header("💡 HOW - Optimization Recommendations")
+    st.info("Ideal LT, Min/Max, and Planning Method Suggestions will be provided based on root cause findings.")
 
-        with col2:
-            if po_lead_time_accuracy_percent is not None:
-                st.metric(
-                    label="PO Lead Time Accuracy",
-                    value=f"{po_lead_time_accuracy_percent:.1f}%",
-                )
-
-    # -------------------------------
-    # Production Metrics - UI
-    # -------------------------------
-    with st.container():
-        st.subheader("🏭 Production Metrics")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if wo_late_percent is not None:
-                st.metric(label="% Late Work Orders", value=f"{wo_late_percent:.1f}%")
-
-        with col2:
-            if wo_lead_time_accuracy_percent is not None:
-                st.metric(
-                    label="WO Lead Time Accuracy",
-                    value=f"{wo_lead_time_accuracy_percent:.1f}%",
-                )
-
-    # -------------------
-    # WHAT Metrics
-    # -------------------
-    with st.expander("🔍 WHAT Metrics — What is going right or wrong?"):
-        if material_shortage_percent is not None:
-            st.metric("Material Shortages", f"{material_shortage_percent:.1f}%")
-        if excess_inventory_percent is not None:
-            st.metric("Excess Inventory", f"{excess_inventory_percent:.1f}%")
-        if avg_inventory_turns is not None:
-            st.metric("Inventory Turns", f"{avg_inventory_turns:.1f}")
-
-    # -------------------------------
-    # Other Metrics (Loop for now)
-    # -------------------------------
-    # Loop through remaining categories (e.g., Forecasting, Planning Parameter, MRP Actions)
-    # that are stored in a dictionary called `results`
-    for category, metrics in results.items():
-        # Skip Procurement and Production because they are rendered above
-        if category in ["📦 Procurement Metrics", "🏭 Production Metrics"]:
-            continue
-
-        # Only display category if it has metrics
-        if metrics:
-            st.subheader(category)
-            cols = st.columns(len(metrics))
-
-            for col, (label, value) in zip(cols, metrics.items()):
-                col.metric(label, f"{value:.1f}")
