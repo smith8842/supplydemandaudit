@@ -52,18 +52,33 @@ if uploaded_file:
     po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
     wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
     wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
+    mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
+
+    # Identify planning strategies
+    mrp_parts = part_master_df[part_master_df["PLANNING_METHOD"] == "MRP"]["PART_ID"]
+    rop_minmax_parts = part_master_df[part_master_df["PLANNING_METHOD"].isin(["ROP", "MIN_MAX"])]
 
     # Determine late open POs based on RECEIPT_DATE > NEED_BY_DATE
     late_open_pos = po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])]
+
     # Determine late open WOs based on COMPLETION_DATE > DUE_DATE
     late_open_wos = wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])]
 
-    # Identify parts with expected shortage conditions
+    # Identify parts with expected shortage conditions from POs/WOs
     parts_with_late_pos = late_open_pos["PART_ID"].unique()
     parts_with_late_wos = late_open_wos["PART_ID"].unique()
 
+    # For ROP/MinMax parts, check for discrete unfulfilled demand
+    today = pd.Timestamp.today()
+    discrete_demand = mrp_df[
+        (mrp_df["PART_ID"].isin(rop_minmax_parts["PART_ID"])) &
+        (~mrp_df["SUGGESTION_TYPE"].str.upper().str.contains("GROSS")) &
+        (mrp_df["NEED_BY_DATE"] < today)
+    ]
+    parts_with_late_demand = discrete_demand["PART_ID"].unique()
+
     # Combine all parts with shortage indicators
-    shortage_part_ids = set(parts_with_late_pos).union(parts_with_late_wos)
+    shortage_part_ids = set(parts_with_late_pos).union(parts_with_late_wos).union(parts_with_late_demand)
     shortage_percent = (len(shortage_part_ids) / len(part_master_df)) * 100
 
     # Sum total on-hand inventory per part
