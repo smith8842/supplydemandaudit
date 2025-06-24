@@ -47,22 +47,43 @@ if uploaded_file:
     st.markdown("---")
     st.header("🔢 WHAT - Supply Planning Results")
 
-    latest_demand = forecast_df.groupby("PART_ID").agg({"QUANTITY": "sum"}).rename(columns={"QUANTITY": "DEMAND"})
+    # Convert date columns for filtering
+    po_df["NEED_BY_DATE"] = pd.to_datetime(po_df["NEED_BY_DATE"])
+    po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
+    wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
+    wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
+
+    # Determine late open POs based on RECEIPT_DATE > NEED_BY_DATE
+    late_open_pos = po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])]
+    # Determine late open WOs based on COMPLETION_DATE > DUE_DATE
+    late_open_wos = wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])]
+
+    # Identify parts with expected shortage conditions
+    parts_with_late_pos = late_open_pos["PART_ID"].unique()
+    parts_with_late_wos = late_open_wos["PART_ID"].unique()
+
+    # Combine all parts with shortage indicators
+    shortage_part_ids = set(parts_with_late_pos).union(parts_with_late_wos)
+    shortage_percent = (len(shortage_part_ids) / len(part_master_df)) * 100
+
+    # Sum total on-hand inventory per part
     inventory_agg = inventory_df.groupby("PART_ID").agg({"ON_HAND_QUANTITY": "sum"})
-    what_df = part_master_df.set_index("PART_ID").join([latest_demand, inventory_agg])
+
+    # Merge inventory and planning data
+    what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
     what_df = what_df.fillna(0)
 
-    what_df["SHORTAGE"] = what_df["ON_HAND_QUANTITY"] < what_df["DEMAND"]
-    shortage_percent = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
-
-    what_df["EXCESS"] = (what_df["ON_HAND_QUANTITY"] > (what_df["DEMAND"] + what_df["SAFETY_STOCK"])) | (what_df["ON_HAND_QUANTITY"] > what_df["MAX_QTY"])
+    # Flag parts where on-hand exceeds safety stock or max qty
+    what_df["EXCESS"] = (what_df["ON_HAND_QUANTITY"] > (what_df["SAFETY_STOCK"] + 1)) | (what_df["ON_HAND_QUANTITY"] > what_df["MAX_QTY"])
     excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
 
+    # Sum total trailing consumption per part
     trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
     what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
     what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
     avg_turns = what_df["INVENTORY_TURNS"].mean()
 
+    # Show results in UI
     with st.expander("📊 WHAT Metrics Results"):
         col1, col2, col3 = st.columns(3)
         col1.metric("% of Parts with Material Shortages", f"{shortage_percent:.1f}%")
@@ -74,16 +95,17 @@ if uploaded_file:
     st.markdown("---")
     st.header("🔎 WHY - Root Cause Metrics")
 
-    # % Late Purchase Orders (closed only)
+    # Filter PO data to closed orders only
     closed_po_df = po_df[po_df["STATUS"].str.lower() == "closed"]
     closed_po_df["LATE"] = pd.to_datetime(closed_po_df["RECEIPT_DATE"]) > pd.to_datetime(closed_po_df["NEED_BY_DATE"])
     po_late_percent = (closed_po_df["LATE"].sum() / len(closed_po_df)) * 100 if len(closed_po_df) > 0 else 0
 
-    # % Late Work Orders (closed only)
+    # Filter WO data to closed orders only
     closed_wo_df = wo_df[wo_df["STATUS"].str.lower() == "closed"]
     closed_wo_df["LATE"] = pd.to_datetime(closed_wo_df["COMPLETION_DATE"]) > pd.to_datetime(closed_wo_df["DUE_DATE"])
     wo_late_percent = (closed_wo_df["LATE"].sum() / len(closed_wo_df)) * 100 if len(closed_wo_df) > 0 else 0
 
+    # Show results in UI
     with st.expander("📊 WHY Metrics Results"):
         col1, col2 = st.columns(2)
         col1.metric("% Late Purchase Orders", f"{po_late_percent:.1f}%")
@@ -97,4 +119,3 @@ if uploaded_file:
     st.markdown("---")
     st.header("💡 HOW - Optimization Recommendations")
     st.info("Ideal LT, Min/Max, and Planning Method Suggestions will be provided based on root cause findings.")
-
