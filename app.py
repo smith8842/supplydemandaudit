@@ -115,10 +115,10 @@ if uploaded_file:
     
     # PO Lead Time Accuracy
     closed_po = po_df[po_df["STATUS"].str.lower() == "closed"]
-    lt_accuracy_po = closed_po.groupby("PART_ID").agg(
-        actual_lt=("LT_DAYS", "mean"),
-        erp_lt=("LEAD_TIME", "first")
-    ).dropna()
+    lt_accuracy_po = closed_po.groupby("PART_ID").agg(actual_lt=("LT_DAYS", "mean")).dropna()
+    lt_accuracy_po = lt_accuracy_po.join(part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt"))
+    lt_accuracy_po = lt_accuracy_po.dropna()
+
     lt_accuracy_po["WITHIN_TOLERANCE"] = abs(lt_accuracy_po["actual_lt"] - lt_accuracy_po["erp_lt"]) / lt_accuracy_po["erp_lt"] <= 0.10
     po_lead_time_accuracy = lt_accuracy_po["WITHIN_TOLERANCE"].mean() * 100 if not lt_accuracy_po.empty else 0
     
