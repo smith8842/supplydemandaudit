@@ -33,6 +33,8 @@ if uploaded_file:
 # --------------------------------
     
     # --- WHAT METRICS ---
+
+    # Calculate inventory aggregation and trailing consumption
     inventory_agg = inventory_df.groupby("PART_ID")["ON_HAND_QUANTITY"].sum()
     what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
     what_df = what_df.fillna(0)
@@ -42,7 +44,7 @@ if uploaded_file:
     what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
     what_df = what_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
 
-    # MRP Excess logic
+    # MRP-based Excess Logic
     mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
     lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * 1.1
     cutoff_dates = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lead_time_buffer, unit="D"))
@@ -64,11 +66,9 @@ if uploaded_file:
         (what_df["ON_HAND_QUANTITY"] > what_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
     )
 
-    # ROP/MinMax Excess logic
+    # ROP / Min-Max Excess Logic
     ropmm_parts = part_master_df[part_master_df["PLANNING_METHOD"].isin(["ROP", "MIN_MAX"])]
-    what_df["IDEAL_MINIMUM"] = (
-        what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME"] * 1.1 + what_df["SAFETY_STOCK"]
-    )
+    what_df["IDEAL_MINIMUM"] = what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME"] * 1.1 + what_df["SAFETY_STOCK"]
     what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MINIMUM"] * 1.1
     ropmm_excess_parts = what_df[
         (what_df.index.isin(ropmm_parts["PART_ID"])) &
@@ -76,29 +76,31 @@ if uploaded_file:
     ].index.tolist()
     what_df.loc[ropmm_excess_parts, "EXCESS"] = True
 
-    # Inventory turns
+    # Inventory Turns
     what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
     avg_turns = what_df["INVENTORY_TURNS"].mean()
 
-    # Shortage logic (simplified for now)
-    late_pos = po_df[(po_df["STATUS"].str.lower() == "open") & (pd.to_datetime(po_df["RECEIPT_DATE"]) > pd.to_datetime(po_df["NEED_BY_DATE"]))]["PART_ID"].unique()
-    late_wos = wo_df[(wo_df["STATUS"].str.lower() == "open") & (pd.to_datetime(wo_df["COMPLETION_DATE"]) > pd.to_datetime(wo_df["DUE_DATE"]))]["PART_ID"].unique()
+    # Shortage Logic
+    late_pos = po_df[
+        (po_df["STATUS"].str.lower() == "open") &
+        (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])
+    ]["PART_ID"].unique()
+
+    late_wos = wo_df[
+        (wo_df["STATUS"].str.lower() == "open") &
+        (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])
+    ]["PART_ID"].unique()
+
     ropmm_shortage_parts = what_df[
         (what_df.index.isin(ropmm_parts["PART_ID"])) &
         (what_df["ON_HAND_QUANTITY"] < what_df["IDEAL_MINIMUM"])
     ].index.tolist()
+
     shortage_part_ids = set(ropmm_shortage_parts).union(set(late_pos)).union(set(late_wos))
     what_df["SHORTAGE"] = what_df.index.isin(shortage_part_ids)
 
     shortage_percent = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
     excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
-
-    with st.expander("📊 WHAT Metrics Results"):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("% of Parts with Material Shortages", f"{shortage_percent:.1f}%")
-        col2.metric("% of Parts with Excess Inventory", f"{excess_percent:.1f}%")
-        col3.metric("Avg Inventory Turns", f"{avg_turns:.1f}")
-        st.dataframe(what_df.reset_index())
         
     # -------- WHY Metrics -----------
     # --- PO and WO Late % and Lead Time Accuracy ---
@@ -156,6 +158,24 @@ if uploaded_file:
     valid_ss_parts = len(ss_df["WITHIN_TOLERANCE"])
     compliant_parts = ss_df["WITHIN_TOLERANCE"].sum()
     ss_coverage_percent = (compliant_parts / valid_ss_parts * 100) if valid_ss_parts > 0 else 0
+
+#------------------------------------    
+# ------- UI for Results -----------
+# -----------------------------------
+    
+    # --- UI for WHAT Metrics ---
+    with st.expander("📊 WHAT Metrics Results"):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🔻 % of Parts with Material Shortages", f"{shortage_percent:.1f}%")
+        col2.metric("📦 % of Parts with Excess Inventory", f"{excess_percent:.1f}%")
+        col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
+
+        st.markdown("### Detailed WHAT Metrics Table")
+        st.dataframe(what_df.reset_index()[[
+            "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
+            "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
+            "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
+        ]])
 
     # Show WHY metrics in UI
     with st.expander("🧪 WHY Metrics Results"):
