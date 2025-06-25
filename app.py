@@ -27,7 +27,11 @@ if uploaded_file:
     mrp_df = pd.read_excel(xls, sheet_name="MRP_SUGGESTIONS")
     consumption_df = pd.read_excel(xls, sheet_name="ACTUAL_CONSUMPTION")
     inventory_df = pd.read_excel(xls, sheet_name="INVENTORY_BALANCES")
-
+    
+# --------------------------------
+# Metrics Calculations
+# --------------------------------
+    
     # --- WHAT METRICS ---
     inventory_agg = inventory_df.groupby("PART_ID")["ON_HAND_QUANTITY"].sum()
     what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
@@ -95,6 +99,43 @@ if uploaded_file:
         col2.metric("% of Parts with Excess Inventory", f"{excess_percent:.1f}%")
         col3.metric("Avg Inventory Turns", f"{avg_turns:.1f}")
         st.dataframe(what_df.reset_index())
+        
+    # -------- WHY Metrics -----------
+    # --- PO and WO Late % and Lead Time Accuracy ---
+    po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
+    po_df["NEED_BY_DATE"] = pd.to_datetime(po_df["NEED_BY_DATE"])
+    po_df["LT_DAYS"] = (po_df["RECEIPT_DATE"] - po_df["NEED_BY_DATE"]).dt.days
+    
+    # % Late POs
+    total_pos = len(po_df)
+    late_pos_count = len(po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])])
+    po_late_percent = (late_pos_count / total_pos) * 100 if total_pos > 0 else 0
+    
+    # PO Lead Time Accuracy
+    closed_po = po_df[po_df["STATUS"].str.lower() == "closed"]
+    lt_accuracy_po = closed_po.groupby("PART_ID").agg(
+        actual_lt=("LT_DAYS", "mean"),
+        erp_lt=("LEAD_TIME", "first")
+    ).dropna()
+    lt_accuracy_po["WITHIN_TOLERANCE"] = abs(lt_accuracy_po["actual_lt"] - lt_accuracy_po["erp_lt"]) / lt_accuracy_po["erp_lt"] <= 0.10
+    po_lead_time_accuracy = lt_accuracy_po["WITHIN_TOLERANCE"].mean() * 100 if not lt_accuracy_po.empty else 0
+    
+    # % Late WOs
+    wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
+    wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
+    wo_df["WO_LT_DAYS"] = (wo_df["COMPLETION_DATE"] - wo_df["DUE_DATE"]).dt.days
+    total_wos = len(wo_df)
+    late_wo_count = len(wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])])
+    wo_late_percent = (late_wo_count / total_wos) * 100 if total_wos > 0 else 0
+    
+    # WO Lead Time Accuracy
+    closed_wo = wo_df[wo_df["STATUS"].str.lower() == "closed"]
+    lt_accuracy_wo = closed_wo.groupby("PART_ID").agg(
+        actual_lt=("WO_LT_DAYS", "mean"),
+        erp_lt=("LEAD_TIME", "first")
+    ).dropna()
+    lt_accuracy_wo["WITHIN_TOLERANCE"] = abs(lt_accuracy_wo["actual_lt"] - lt_accuracy_wo["erp_lt"]) / lt_accuracy_wo["erp_lt"] <= 0.10
+    wo_lead_time_accuracy = lt_accuracy_wo["WITHIN_TOLERANCE"].mean() * 100 if not lt_accuracy_wo.empty else 0
 
     # --- SAFETY STOCK ACCURACY ---
     recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
