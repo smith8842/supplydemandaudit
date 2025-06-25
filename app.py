@@ -23,6 +23,7 @@ if uploaded_file:
     xls = pd.ExcelFile(uploaded_file)
     part_master_df = pd.read_excel(xls, sheet_name="PART_MASTER")
     po_df = pd.read_excel(xls, sheet_name="PURCHASE_ORDER_LINES")
+    st.write("Columns in PURCHASE_ORDER_LINES:", po_df.columns.tolist())
     wo_df = pd.read_excel(xls, sheet_name="WORK_ORDERS")
     mrp_df = pd.read_excel(xls, sheet_name="MRP_SUGGESTIONS")
     consumption_df = pd.read_excel(xls, sheet_name="ACTUAL_CONSUMPTION")
@@ -188,11 +189,11 @@ if uploaded_file:
         st.markdown("### Late PO Details")
         st.dataframe(po_df[po_df["STATUS"].str.lower() == "open"].loc[
             pd.to_datetime(po_df["RECEIPT_DATE"]) > pd.to_datetime(po_df["NEED_BY_DATE"]),
-            ["PART_ID", "PO_NUMBER", "NEED_BY_DATE", "RECEIPT_DATE"]
+            ["PART_ID", "PO_LINE_ID", "NEED_BY_DATE", "RECEIPT_DATE"]
         ])
 
         st.markdown("### PO Lead Time Accuracy Detail")
-        st.dataframe(po_df[po_df["STATUS"].str.lower() == "closed"][["PART_ID", "PO_NUMBER", "NEED_BY_DATE", "RECEIPT_DATE"]])
+        st.dataframe(po_df[po_df["STATUS"].str.lower() == "closed"][["PART_ID", "PO_LINE_ID", "NEED_BY_DATE", "RECEIPT_DATE"]])
 
         st.markdown("### Safety Stock Accuracy Detail")
         st.dataframe(ss_df.reset_index()[[
