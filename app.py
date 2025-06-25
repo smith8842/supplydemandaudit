@@ -88,8 +88,25 @@ if uploaded_file:
     what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
     what_df = what_df.fillna(0)
 
-    # Flag parts where on-hand exceeds safety stock or max qty
-    what_df["EXCESS"] = (what_df["ON_HAND_QUANTITY"] > (what_df["SAFETY_STOCK"] + 1)) | (what_df["ON_HAND_QUANTITY"] > what_df["MAX_QTY"])
+    # Refactored EXCESS logic (MRP-planned parts only)
+    lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME_DAYS"] * 1.1
+    cutoff_dates = pd.to_datetime(today + pd.to_timedelta(lead_time_buffer, unit="D"))
+    cutoff_dates.name = "CUTOFF_DATE"
+
+    mrp_window_flags = (
+        mrp_df[mrp_df["PART_ID"].isin(mrp_parts)]
+        .merge(cutoff_dates, left_on="PART_ID", right_index=True)
+        .assign(IN_WINDOW=lambda df: df["NEED_BY_DATE"] <= df["CUTOFF_DATE"])
+        .groupby("PART_ID")["IN_WINDOW"].any()
+    )
+
+    what_df = what_df.join(mrp_window_flags.rename("HAS_MRP_WITHIN_LT"))
+    what_df["HAS_MRP_WITHIN_LT"] = what_df["HAS_MRP_WITHIN_LT"].fillna(False)
+    what_df["EXCESS"] = (
+        (what_df.index.isin(mrp_parts)) &
+        (~what_df["HAS_MRP_WITHIN_LT"]) &
+        (what_df["ON_HAND_QUANTITY"] > what_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
+    )
     excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
 
     # Sum total trailing consumption per part
