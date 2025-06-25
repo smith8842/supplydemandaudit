@@ -146,3 +146,49 @@ if uploaded_file:
         col2.metric("% of Parts with Excess Inventory", f"{excess_percent:.1f}%")
         col3.metric("Avg Inventory Turns", f"{avg_turns:.1f}")
         st.dataframe(what_df.reset_index())
+
+    # --- WHY Metrics: Root Cause Analysis ---
+    st.markdown("---")
+    st.header("🕵️ WHY - Root Cause Metrics")
+
+    # % Late Purchase Orders
+    total_pos = len(po_df)
+    late_pos_count = len(late_open_pos)
+    po_late_percent = (late_pos_count / total_pos * 100) if total_pos > 0 else 0
+
+    # % Late Work Orders
+    total_wos = len(wo_df)
+    late_wo_count = len(late_open_wos)
+    wo_late_percent = (late_wo_count / total_wos * 100) if total_wos > 0 else 0
+
+    # PO Lead Time Accuracy
+    po_lead_accuracy_parts = []
+    po_grouped = po_df[po_df["STATUS"].str.lower() == "closed"].groupby("PART_ID")
+    for part, group in po_grouped:
+        if len(group) >= 3:
+            avg_actual_lt = (group["RECEIPT_DATE"] - group["NEED_BY_DATE"]).dt.days.mean()
+            planned_lt = part_master_df.loc[part_master_df["PART_ID"] == part, "LEAD_TIME"].values
+            if planned_lt.size > 0:
+                if abs(avg_actual_lt - planned_lt[0]) / planned_lt[0] <= 0.1:
+                    po_lead_accuracy_parts.append(part)
+    po_lead_time_accuracy = (len(po_lead_accuracy_parts) / len(po_grouped)) * 100 if len(po_grouped) > 0 else 0
+
+    # WO Lead Time Accuracy
+    wo_lead_accuracy_parts = []
+    wo_grouped = wo_df[wo_df["STATUS"].str.lower() == "closed"].groupby("PART_ID")
+    for part, group in wo_grouped:
+        if len(group) >= 3:
+            avg_actual_lt = (group["COMPLETION_DATE"] - group["DUE_DATE"]).dt.days.mean()
+            planned_lt = part_master_df.loc[part_master_df["PART_ID"] == part, "LEAD_TIME"].values
+            if planned_lt.size > 0:
+                if abs(avg_actual_lt - planned_lt[0]) / planned_lt[0] <= 0.1:
+                    wo_lead_accuracy_parts.append(part)
+    wo_lead_time_accuracy = (len(wo_lead_accuracy_parts) / len(wo_grouped)) * 100 if len(wo_grouped) > 0 else 0
+
+    # Show WHY metrics in UI
+    with st.expander("🧪 WHY Metrics Results"):
+        col1, col2 = st.columns(2)
+        col1.metric("% Late Purchase Orders", f"{po_late_percent:.1f}%")
+        col2.metric("PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
+        col1.metric("% Late Work Orders", f"{wo_late_percent:.1f}%")
+        col2.metric("WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
