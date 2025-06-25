@@ -86,7 +86,7 @@ if uploaded_file:
 
     # Calculate ideal inventory threshold for ROP/MinMax parts
     what_df["IDEAL_MINIMUM"] = (
-        what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME_DAYS"] * 1.1 + what_df["SAFETY_STOCK"]
+        what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME"] * 1.1 + what_df["SAFETY_STOCK"]
     )
     what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MINIMUM"] * 1.1
 
@@ -110,7 +110,7 @@ if uploaded_file:
     shortage_percent = (len(shortage_part_ids) / len(part_master_df)) * 100
 
     # Refactored EXCESS logic (MRP-planned parts only)
-    lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME_DAYS"] * 1.1
+    lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * 1.1
     cutoff_dates = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lead_time_buffer, unit="D"))
     cutoff_dates.name = "CUTOFF_DATE"
 
