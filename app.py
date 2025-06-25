@@ -64,22 +64,9 @@ if uploaded_file:
     # Determine late open WOs based on COMPLETION_DATE > DUE_DATE
     late_open_wos = wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])]
 
-    # Identify parts with expected shortage conditions from POs/WOs
+    # Identify parts with expected shortage conditions from POs/WOs (MRP planned only)
     parts_with_late_pos = late_open_pos["PART_ID"].unique()
     parts_with_late_wos = late_open_wos["PART_ID"].unique()
-
-    # For ROP/MinMax parts, check for discrete unfulfilled demand
-    today = pd.Timestamp.today()
-    discrete_demand = mrp_df[
-        (mrp_df["PART_ID"].isin(rop_minmax_parts["PART_ID"])) &
-        (~mrp_df["SUGGESTION_TYPE"].str.upper().str.contains("GROSS")) &
-        (mrp_df["NEED_BY_DATE"] < today)
-    ]
-    parts_with_late_demand = discrete_demand["PART_ID"].unique()
-
-    # Combine all parts with shortage indicators
-    shortage_part_ids = set(parts_with_late_pos).union(parts_with_late_wos).union(parts_with_late_demand)
-    shortage_percent = (len(shortage_part_ids) / len(part_master_df)) * 100
 
     # Sum total on-hand inventory per part
     inventory_agg = inventory_df.groupby("PART_ID").agg({"ON_HAND_QUANTITY": "sum"})
@@ -88,9 +75,43 @@ if uploaded_file:
     what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
     what_df = what_df.fillna(0)
 
+    # Calculate trailing consumption per part
+    trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
+    what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
+
+    # Calculate average daily consumption
+    trailing_days = 90
+    trailing_avg_daily = consumption_df.groupby("PART_ID")["QUANTITY"].sum() / trailing_days
+    what_df = what_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+
+    # Calculate ideal inventory threshold for ROP/MinMax parts
+    what_df["IDEAL_MINIMUM"] = (
+        what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME_DAYS"] * 1.1 + what_df["SAFETY_STOCK"]
+    )
+    what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MINIMUM"] * 1.1
+
+    # Identify ROP/MinMax shortages based on inventory below ideal minimum
+    ropmm_shortage_parts = what_df[
+        (what_df.index.isin(rop_minmax_parts["PART_ID"])) &
+        (what_df["ON_HAND_QUANTITY"] < what_df["IDEAL_MINIMUM"])
+    ].index.tolist()
+
+    # Identify ROP/MinMax excess based on inventory above ideal maximum
+    ropmm_excess_parts = what_df[
+        (what_df.index.isin(rop_minmax_parts["PART_ID"])) &
+        (what_df["ON_HAND_QUANTITY"] > what_df["IDEAL_MAXIMUM"])
+    ].index.tolist()
+
+    # Identify MRP shortages (late open POs or WOs)
+    mrp_shortage_parts = set(parts_with_late_pos).union(parts_with_late_wos)
+
+    # Combine all parts with shortage indicators
+    shortage_part_ids = set(ropmm_shortage_parts).union(mrp_shortage_parts)
+    shortage_percent = (len(shortage_part_ids) / len(part_master_df)) * 100
+
     # Refactored EXCESS logic (MRP-planned parts only)
     lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME_DAYS"] * 1.1
-    cutoff_dates = pd.to_datetime(today + pd.to_timedelta(lead_time_buffer, unit="D"))
+    cutoff_dates = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lead_time_buffer, unit="D"))
     cutoff_dates.name = "CUTOFF_DATE"
 
     mrp_window_flags = (
@@ -107,11 +128,11 @@ if uploaded_file:
         (~what_df["HAS_MRP_WITHIN_LT"]) &
         (what_df["ON_HAND_QUANTITY"] > what_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
     )
+    what_df.loc[ropmm_excess_parts, "EXCESS"] = True
+
     excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
 
-    # Sum total trailing consumption per part
-    trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
-    what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
+    # Inventory turns
     what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
     avg_turns = what_df["INVENTORY_TURNS"].mean()
 
@@ -125,32 +146,3 @@ if uploaded_file:
         col2.metric("% of Parts with Excess Inventory", f"{excess_percent:.1f}%")
         col3.metric("Avg Inventory Turns", f"{avg_turns:.1f}")
         st.dataframe(what_df.reset_index())
-
-    # --- WHY Metrics: Root Cause ---
-    st.markdown("---")
-    st.header("🔎 WHY - Root Cause Metrics")
-
-    # Filter PO data to closed orders only
-    closed_po_df = po_df[po_df["STATUS"].str.lower() == "closed"]
-    closed_po_df["LATE"] = pd.to_datetime(closed_po_df["RECEIPT_DATE"]) > pd.to_datetime(closed_po_df["NEED_BY_DATE"])
-    po_late_percent = (closed_po_df["LATE"].sum() / len(closed_po_df)) * 100 if len(closed_po_df) > 0 else 0
-
-    # Filter WO data to closed orders only
-    closed_wo_df = wo_df[wo_df["STATUS"].str.lower() == "closed"]
-    closed_wo_df["LATE"] = pd.to_datetime(closed_wo_df["COMPLETION_DATE"]) > pd.to_datetime(closed_wo_df["DUE_DATE"])
-    wo_late_percent = (closed_wo_df["LATE"].sum() / len(closed_wo_df)) * 100 if len(closed_wo_df) > 0 else 0
-
-    # Show results in UI
-    with st.expander("📊 WHY Metrics Results"):
-        col1, col2 = st.columns(2)
-        col1.metric("% Late Purchase Orders", f"{po_late_percent:.1f}%")
-        col2.metric("% Late Work Orders", f"{wo_late_percent:.1f}%")
-        st.dataframe(pd.concat([
-            closed_po_df[["PART_ID", "RECEIPT_DATE", "NEED_BY_DATE", "LATE"]].head(),
-            closed_wo_df[["PART_ID", "COMPLETION_DATE", "DUE_DATE", "LATE"]].head()
-        ], keys=["PO Sample", "WO Sample"]))
-
-    # --- HOW Placeholder ---
-    st.markdown("---")
-    st.header("💡 HOW - Optimization Recommendations")
-    st.info("Ideal LT, Min/Max, and Planning Method Suggestions will be provided based on root cause findings.")
