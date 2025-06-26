@@ -172,22 +172,4 @@ if uploaded_file:
             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
         ]])
         
-       
-    # Show WHY metrics in UI
-    with st.expander("🧪 WHY Metrics Results"):
-        col1, col2 = st.columns(2)
-        col1.metric("% Late Purchase Orders", f"{po_late_percent:.1f}%")
-        col2.metric("PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
-        col1.metric("% Late Work Orders", f"{wo_late_percent:.1f}%")
-        col2.metric("WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
-        col1.metric("% of Parts with Valid Safety Stock", f"{ss_coverage_percent:.1f}%")
-
-    with st.expander("📎 WHY Metrics - Part-Level Detail"):
-        st.dataframe(part_level_df[[
-            "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
-            "CALCULATED_SAFETY_STOCK", "SS_ACCURATE", "AVG_PO_LEAD_TIME", "PO_LEAD_TIME_ACCURATE",
-            "AVG_WO_LEAD_TIME", "WO_LEAD_TIME_ACCURATE", "LATE_PO_COUNT", "LATE_WO_COUNT"
-        ]])
     
-    with st.expander("📦 WHY Metrics - Order-Level Detail"):
-        st.dataframe(all_orders_df.reset_index(drop=True))
