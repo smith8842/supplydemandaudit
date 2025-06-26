@@ -196,14 +196,14 @@ if uploaded_file:
     # --- Order-Level Detail Table ---
     order_df_po = po_df.copy()
     order_df_po["ORDER_TYPE"] = "PO"
-    order_df_po["ORDER_ID"] = order_df_po["PO_NUMBER"]
+    order_df_po["ORDER_ID"] = order_df_po["PO_LINE_ID"]
     order_df_po["IS_LATE"] = order_df_po["RECEIPT_DATE"] > order_df_po["NEED_BY_DATE"]
     order_df_po["ERP_LEAD_TIME"] = order_df_po["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
     order_df_po["WITHIN_10_PERCENT"] = abs(order_df_po["LT_DAYS"] - order_df_po["ERP_LEAD_TIME"]) / order_df_po["ERP_LEAD_TIME"] <= 0.10
 
     order_df_wo = wo_df.copy()
     order_df_wo["ORDER_TYPE"] = "WO"
-    order_df_wo["ORDER_ID"] = order_df_wo["WO_NUMBER"]
+    order_df_wo["ORDER_ID"] = order_df_wo["WO_ID"]
     order_df_wo["IS_LATE"] = order_df_wo["COMPLETION_DATE"] > order_df_wo["DUE_DATE"]
     order_df_wo["ERP_LEAD_TIME"] = order_df_wo["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
     order_df_wo["WITHIN_10_PERCENT"] = abs(order_df_wo["WO_LT_DAYS"] - order_df_wo["ERP_LEAD_TIME"]) / order_df_wo["ERP_LEAD_TIME"] <= 0.10
