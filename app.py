@@ -205,7 +205,7 @@ if uploaded_file:
             IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
             LT_DAYS=po_order_df["LT_DAYS"],
             ERP_LEAD_TIME=po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"]),
-            WITHIN_10_PERCENT=(abs(po_order_df["LT_DAYS"] - po_order_df["LEAD_TIME"]) / po_order_df["LEAD_TIME"]) <= 0.10
+            WITHIN_10_PERCENT=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= 0.10
         )
 
         wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
@@ -217,7 +217,7 @@ if uploaded_file:
             IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
             LT_DAYS=wo_order_df["WO_LT_DAYS"],
             ERP_LEAD_TIME=wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"]),
-            WITHIN_10_PERCENT=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["LEAD_TIME"]) / wo_order_df["LEAD_TIME"]) <= 0.10
+            WITHIN_10_PERCENT=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= 0.10
         )
 
         all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
