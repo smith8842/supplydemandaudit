@@ -224,5 +224,5 @@ if uploaded_file:
 
         st.dataframe(all_orders_df[[
             "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
-            "LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"
+            "ERP_LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"
         ]])
