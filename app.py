@@ -197,6 +197,7 @@ if uploaded_file:
 
         st.markdown("### Detailed WHY Metrics Table — by Order")
         po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
+        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
         po_order_df = po_order_df.assign(
             ORDER_TYPE="PO",
             ORDER_ID=po_order_df["PO_LINE_ID"],
@@ -209,6 +210,7 @@ if uploaded_file:
         )
 
         wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
+        wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
         wo_order_df = wo_order_df.assign(
             ORDER_TYPE="WO",
             ORDER_ID=wo_order_df["WO_ID"],
