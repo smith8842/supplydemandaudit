@@ -28,11 +28,11 @@ if uploaded_file:
     mrp_df = pd.read_excel(xls, sheet_name="MRP_SUGGESTIONS")
     consumption_df = pd.read_excel(xls, sheet_name="ACTUAL_CONSUMPTION")
     inventory_df = pd.read_excel(xls, sheet_name="INVENTORY_BALANCES")
-    
+
 # --------------------------------
 # Metrics Calculations
 # --------------------------------
-    
+
     # --- WHAT METRICS ---
 
     # Calculate inventory aggregation and trailing consumption
@@ -102,7 +102,7 @@ if uploaded_file:
 
     shortage_percent = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
     excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
-        
+
     # -------- WHY Metrics -----------
     # --- PO and WO Late % and Lead Time Accuracy ---
     po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
@@ -110,7 +110,7 @@ if uploaded_file:
     po_df["LT_DAYS"] = (po_df["RECEIPT_DATE"] - po_df["NEED_BY_DATE"]).dt.days
 
     total_pos = len(po_df)
-    late_pos_count = len(po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])])
+    late_pos_count = len(po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])] )
     po_late_percent = (late_pos_count / total_pos) * 100 if total_pos > 0 else 0
 
     closed_po = po_df[po_df["STATUS"].str.lower() == "closed"]
@@ -124,7 +124,7 @@ if uploaded_file:
     wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
     wo_df["WO_LT_DAYS"] = (wo_df["COMPLETION_DATE"] - wo_df["DUE_DATE"]).dt.days
     total_wos = len(wo_df)
-    late_wo_count = len(wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])])
+    late_wo_count = len(wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])] )
     wo_late_percent = (late_wo_count / total_wos) * 100 if total_wos > 0 else 0
 
     closed_wo = wo_df[wo_df["STATUS"].str.lower() == "closed"]
@@ -157,7 +157,7 @@ if uploaded_file:
 #------------------------------------    
 # ------- UI for Results -----------
 # -----------------------------------
-    
+
     # --- UI for WHAT Metrics ---
     with st.expander("📊 WHAT Metrics Results"):
         col1, col2, col3 = st.columns(3)
@@ -171,5 +171,58 @@ if uploaded_file:
             "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
         ]])
-        
-    
+
+    # --- UI for WHY Metrics ---
+    with st.expander("🔍 WHY Metrics Results"):
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
+        col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
+        col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
+        col4.metric("🛠️ WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
+        col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
+
+        st.markdown("### Detailed WHY Metrics Table — by Part")
+        part_detail_df = part_master_df.copy()
+        part_detail_df = part_detail_df.set_index("PART_ID")
+        part_detail_df = part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+        part_detail_df = part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
+        part_detail_df = part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
+        part_detail_df = part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
+
+        st.dataframe(part_detail_df.reset_index()[[
+            "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
+            "IDEAL_SS", "SS_COMPLIANT_PART", "PO_LEAD_TIME_ACCURATE", "WO_LEAD_TIME_ACCURATE",
+            "AVG_WO_LEAD_TIME", "AVG_PO_LEAD_TIME"
+        ]])
+
+        st.markdown("### Detailed WHY Metrics Table — by Order")
+        po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
+        po_order_df = po_order_df.assign(
+            ORDER_TYPE="PO",
+            ORDER_ID=po_order_df["PO_LINE_ID"],
+            NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
+            RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
+            IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
+            LT_DAYS=po_order_df["LT_DAYS"],
+            ERP_LEAD_TIME=po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"]),
+            WITHIN_10_PERCENT=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= 0.10
+        )
+
+        wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
+        wo_order_df = wo_order_df.assign(
+            ORDER_TYPE="WO",
+            ORDER_ID=wo_order_df["WO_ID"],
+            NEED_BY_DATE=wo_order_df["DUE_DATE"],
+            RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
+            IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
+            LT_DAYS=wo_order_df["WO_LT_DAYS"],
+            ERP_LEAD_TIME=wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"]),
+            WITHIN_10_PERCENT=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= 0.10
+        )
+
+        all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
+
+        st.dataframe(all_orders_df[[
+            "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
+            "ERP_LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"
+        ]])
