@@ -172,47 +172,7 @@ if uploaded_file:
             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
         ]])
         
-    # --- Part-Level Detail Table Setup---
-    part_level_df = part_master_df.set_index("PART_ID").copy()
-    part_level_df["PART_NUMBER"] = part_master_df["PART_NUMBER"]
-    part_level_df["LEAD_TIME"] = part_master_df["LEAD_TIME"]
-    part_level_df["SAFETY_STOCK"] = part_master_df["SAFETY_STOCK"]
-
-    part_level_df["AVG_DAILY_CONSUMPTION"] = consumption_df.groupby("PART_ID")["QUANTITY"].sum() / trailing_days
-    part_level_df["CALCULATED_SAFETY_STOCK"] = (
-        consumption_df.groupby("PART_ID")["QUANTITY"].std().fillna(0) * z_score * np.sqrt(part_level_df["LEAD_TIME"])
-    )
-    part_level_df["SS_ACCURATE"] = abs(part_level_df["SAFETY_STOCK"] - part_level_df["CALCULATED_SAFETY_STOCK"]) / part_level_df["CALCULATED_SAFETY_STOCK"] <= 0.10
-
-    part_level_df["PO_LEAD_TIME_ACCURATE"] = lt_accuracy_po["WITHIN_TOLERANCE"]
-    part_level_df["AVG_PO_LEAD_TIME"] = lt_accuracy_po["actual_lt"]
-    part_level_df["WO_LEAD_TIME_ACCURATE"] = lt_accuracy_wo["WITHIN_TOLERANCE"]
-    part_level_df["AVG_WO_LEAD_TIME"] = lt_accuracy_wo["actual_lt"]
-
-    part_level_df["LATE_PO_COUNT"] = po_df[po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"]].groupby("PART_ID").size()
-    part_level_df["LATE_WO_COUNT"] = wo_df[wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"]].groupby("PART_ID").size()
-    part_level_df = part_level_df.reset_index()
-
-    # --- Order-Level Detail Table ---
-    order_df_po = po_df.copy()
-    order_df_po["ORDER_TYPE"] = "PO"
-    order_df_po["ORDER_ID"] = order_df_po["PO_LINE_ID"]
-    order_df_po["IS_LATE"] = order_df_po["RECEIPT_DATE"] > order_df_po["NEED_BY_DATE"]
-    order_df_po["ERP_LEAD_TIME"] = order_df_po["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
-    order_df_po["WITHIN_10_PERCENT"] = abs(order_df_po["LT_DAYS"] - order_df_po["ERP_LEAD_TIME"]) / order_df_po["ERP_LEAD_TIME"] <= 0.10
-
-    order_df_wo = wo_df.copy()
-    order_df_wo["ORDER_TYPE"] = "WO"
-    order_df_wo["ORDER_ID"] = order_df_wo["WO_ID"]
-    order_df_wo["IS_LATE"] = order_df_wo["COMPLETION_DATE"] > order_df_wo["DUE_DATE"]
-    order_df_wo["ERP_LEAD_TIME"] = order_df_wo["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
-    order_df_wo["WITHIN_10_PERCENT"] = abs(order_df_wo["WO_LT_DAYS"] - order_df_wo["ERP_LEAD_TIME"]) / order_df_wo["ERP_LEAD_TIME"] <= 0.10
-
-    all_orders_df = pd.concat([
-        order_df_po[["ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE", "ERP_LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"]],
-        order_df_wo[["ORDER_TYPE", "ORDER_ID", "PART_ID", "DUE_DATE", "COMPLETION_DATE", "STATUS", "IS_LATE", "ERP_LEAD_TIME", "WO_LT_DAYS", "WITHIN_10_PERCENT"]]
-    ])
-    
+       
     # Show WHY metrics in UI
     with st.expander("🧪 WHY Metrics Results"):
         col1, col2 = st.columns(2)
