@@ -186,7 +186,7 @@ if uploaded_file:
         col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
 
         st.markdown("### Detailed WHAT Metrics Table")
-        st.dataframe(what_df.reset_index()[[
+        st.dataframe(what_df[[
             "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
             "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
