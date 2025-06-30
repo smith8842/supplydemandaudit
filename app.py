@@ -38,12 +38,12 @@ if uploaded_file:
 
     # Calculate inventory aggregation and trailing consumption
     inventory_agg = inventory_df.groupby("PART_ID")["ON_HAND_QUANTITY"].sum()
-    what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
-    what_df = what_df.fillna(0)
+    what_part_detail_df = part_master_df.set_index("PART_ID").join(inventory_agg)
+    what_part_detail_df = what_part_detail_df.fillna(0)
 
     # === FINALIZATION PATCH FOR PART-LEVEL AUDIT DF ===
     # Add PART_ID as a visible column (currently only index)
-    what_df["PART_ID"] = what_df.index
+    what_part_detail_df["PART_ID"] = what_part_detail_df.index
 
     # Confirm essential fields exist (already included from initial join)
     # No need to rejoin PART_NUMBER or PLANNING_METHOD
@@ -54,17 +54,17 @@ if uploaded_file:
         "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", "AVG_DAILY_CONSUMPTION"
     ]
     for col in numeric_cols:
-        if col in what_df.columns:
-            what_df[col] = pd.to_numeric(what_df[col], errors="coerce").fillna(0)
+        if col in what_part_detail_df.columns:
+            what_part_detail_df[col] = pd.to_numeric(what_part_detail_df[col], errors="coerce").fillna(0)
 
     # Normalize planning method as string
-    if "PLANNING_METHOD" in what_df.columns:
-        what_df["PLANNING_METHOD"] = what_df["PLANNING_METHOD"].astype(str)
+    if "PLANNING_METHOD" in what_part_detail_df.columns:
+        what_part_detail_df["PLANNING_METHOD"] = what_part_detail_df["PLANNING_METHOD"].astype(str)
 
     trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
     trailing_avg_daily = trailing_consumption / trailing_days
-    what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
-    what_df = what_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+    what_part_detail_df = what_part_detail_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
+    what_part_detail_df = what_part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
 
     # MRP-based Excess Logic
     mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
@@ -80,27 +80,27 @@ if uploaded_file:
         .groupby("PART_ID")["IN_WINDOW"].any()
     )
 
-    what_df = what_df.join(mrp_window_flags.rename("HAS_MRP_WITHIN_LT"))
-    what_df["HAS_MRP_WITHIN_LT"] = what_df["HAS_MRP_WITHIN_LT"].fillna(False)
-    what_df["EXCESS"] = (
-        (what_df.index.isin(mrp_parts)) &
-        (~what_df["HAS_MRP_WITHIN_LT"]) &
-        (what_df["ON_HAND_QUANTITY"] > what_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
+    what_part_detail_df = what_part_detail_df.join(mrp_window_flags.rename("HAS_MRP_WITHIN_LT"))
+    what_part_detail_df["HAS_MRP_WITHIN_LT"] = what_part_detail_df["HAS_MRP_WITHIN_LT"].fillna(False)
+    what_part_detail_df["EXCESS"] = (
+        (what_part_detail_df.index.isin(mrp_parts)) &
+        (~what_part_detail_df["HAS_MRP_WITHIN_LT"]) &
+        (what_part_detail_df["ON_HAND_QUANTITY"] > what_part_detail_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
     )
 
     # ROP / Min-Max Excess Logic
     ropmm_parts = part_master_df[part_master_df["PLANNING_METHOD"].isin(["ROP", "MIN_MAX"])]
-    what_df["IDEAL_MINIMUM"] = what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME"] * 1.1 + what_df["SAFETY_STOCK"]
-    what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MINIMUM"] * 1.1
-    ropmm_excess_parts = what_df[
-        (what_df.index.isin(ropmm_parts["PART_ID"])) &
-        (what_df["ON_HAND_QUANTITY"] > what_df["IDEAL_MAXIMUM"])
+    what_part_detail_df["IDEAL_MINIMUM"] = what_part_detail_df["AVG_DAILY_CONSUMPTION"] * what_part_detail_df["LEAD_TIME"] * 1.1 + what_part_detail_df["SAFETY_STOCK"]
+    what_part_detail_df["IDEAL_MAXIMUM"] = what_part_detail_df["IDEAL_MINIMUM"] * 1.1
+    ropmm_excess_parts = what_part_detail_df[
+        (what_part_detail_df.index.isin(ropmm_parts["PART_ID"])) &
+        (what_part_detail_df["ON_HAND_QUANTITY"] > what_part_detail_df["IDEAL_MAXIMUM"])
     ].index.tolist()
-    what_df.loc[ropmm_excess_parts, "EXCESS"] = True
+    what_part_detail_df.loc[ropmm_excess_parts, "EXCESS"] = True
 
     # Inventory Turns
-    what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
-    avg_turns = what_df["INVENTORY_TURNS"].mean()
+    what_part_detail_df["INVENTORY_TURNS"] = what_part_detail_df["TRAILING_CONSUMPTION"] / (what_part_detail_df["ON_HAND_QUANTITY"] + 1)
+    avg_turns = what_part_detail_df["INVENTORY_TURNS"].mean()
 
     # Shortage Logic
     late_pos = po_df[
@@ -113,16 +113,16 @@ if uploaded_file:
         (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])
     ]["PART_ID"].unique()
 
-    ropmm_shortage_parts = what_df[
-        (what_df.index.isin(ropmm_parts["PART_ID"])) &
-        (what_df["ON_HAND_QUANTITY"] < what_df["IDEAL_MINIMUM"])
+    ropmm_shortage_parts = what_part_detail_df[
+        (what_part_detail_df.index.isin(ropmm_parts["PART_ID"])) &
+        (what_part_detail_df["ON_HAND_QUANTITY"] < what_part_detail_df["IDEAL_MINIMUM"])
     ].index.tolist()
 
     shortage_part_ids = set(ropmm_shortage_parts).union(set(late_pos)).union(set(late_wos))
-    what_df["SHORTAGE"] = what_df.index.isin(shortage_part_ids)
+    what_part_detail_df["SHORTAGE"] = what_part_detail_df.index.isin(shortage_part_ids)
 
-    shortage_percent = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
-    excess_percent = (what_df["EXCESS"].sum() / len(what_df)) * 100
+    shortage_percent = (what_part_detail_df["SHORTAGE"].sum() / len(what_df)) * 100
+    excess_percent = (what_part_detail_df["EXCESS"].sum() / len(what_df)) * 100
 
     # -------- WHY Metrics -----------
     # --- PO and WO Late % and Lead Time Accuracy ---
@@ -193,26 +193,38 @@ if uploaded_file:
     high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
 
     # --- Finalize part-level audit DataFrame for WHY metrics ---
-    part_detail_df = part_master_df.copy()
-    part_detail_df = part_detail_df.set_index("PART_ID")
+    why_part_detail_df = part_master_df.copy()
+    why_part_detail_df = why_part_detail_df.set_index("PART_ID")
     
-    part_detail_df = part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+    why_part_detail_df = why_part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
     
-    part_detail_df = part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(
+    why_part_detail_df = why_part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(
         columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
     
-    part_detail_df = part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(
+    why_part_detail_df = why_part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(
         columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
     
-    part_detail_df = part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(
+    why_part_detail_df = why_part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(
         columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
     
     # Ensure index types match before joining scrap rate
-    scrap_rate_df.index = scrap_rate_df.index.astype(part_detail_df.index.dtype)
-    part_detail_df = part_detail_df.join(scrap_rate_df)
+    scrap_rate_df.index = scrap_rate_df.index.astype(why_part_detail_df.index.dtype)
+    why_part_detail_df = why_part_detail_df.join(scrap_rate_df)
 
-    # Cache part_detail_df in session for reuse by AI agents or multi-page views
-    st.session_state["part_detail_df"] = part_detail_df.reset_index()
+    # Cache why_part_detail_df in session for reuse by AI agents or multi-page views
+    st.session_state["why_part_detail_df"] = why_part_detail_df.reset_index()
+
+    # --- Combine WHAT and WHY part-level data ---
+    combined_part_detail_df = what_part_detail_df.set_index("PART_ID").join(
+        why_part_detail_df, how="outer", lsuffix="_what", rsuffix="_why"
+    )
+    
+    # Remove exact duplicate columns (if any appear in both sides with same name)
+    combined_part_detail_df = combined_part_detail_df.loc[:, ~combined_part_detail_df.columns.duplicated()]
+    
+    # Reset index for agent-friendly format and store in session
+    st.session_state["combined_part_detail_df"] = combined_part_detail_df.reset_index()
+
 
 #------------------------------------    
 # ------- UI for Results -----------
@@ -226,7 +238,7 @@ if uploaded_file:
         col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
 
         st.markdown("### Detailed WHAT Metrics Table")
-        st.dataframe(what_df[[
+        st.dataframe(what_part_detail_df[[
             "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
             "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
@@ -243,7 +255,7 @@ if uploaded_file:
         col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
 
         st.markdown("### Detailed WHY Metrics Table — by Part")    
-        st.dataframe(part_detail_df.reset_index()[[
+        st.dataframe(why_part_detail_df.reset_index()[[
             "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
             "IDEAL_SS", "SS_COMPLIANT_PART", "PO_LEAD_TIME_ACCURATE", "WO_LEAD_TIME_ACCURATE",
             "AVG_WO_LEAD_TIME", "AVG_PO_LEAD_TIME", "AVG_SCRAP_RATE"
