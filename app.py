@@ -191,11 +191,28 @@ if uploaded_file:
     valid_scrap_parts = scrap_rate_by_part.count()
     high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
     high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
-        
-    # Summary metric: % of parts with scrap rate > threshold
-    valid_scrap_parts = scrap_rate_by_part.count()
-    high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
-    high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
+
+    # --- Finalize part-level audit DataFrame for WHY metrics ---
+    part_detail_df = part_master_df.copy()
+    part_detail_df = part_detail_df.set_index("PART_ID")
+    
+    part_detail_df = part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+    
+    part_detail_df = part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(
+        columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
+    
+    part_detail_df = part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(
+        columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
+    
+    part_detail_df = part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(
+        columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
+    
+    # Ensure index types match before joining scrap rate
+    scrap_rate_df.index = scrap_rate_df.index.astype(part_detail_df.index.dtype)
+    part_detail_df = part_detail_df.join(scrap_rate_df)
+
+    # Cache part_detail_df in session for reuse by AI agents or multi-page views
+    st.session_state["part_detail_df"] = part_detail_df.reset_index()
 
 #------------------------------------    
 # ------- UI for Results -----------
@@ -225,19 +242,7 @@ if uploaded_file:
         col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
         col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
 
-        st.markdown("### Detailed WHY Metrics Table — by Part")
-        part_detail_df = part_master_df.copy()
-        part_detail_df = part_detail_df.set_index("PART_ID")
-        part_detail_df = part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
-        part_detail_df = part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
-        part_detail_df = part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
-        part_detail_df = part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
-        st.write("Scrap Rate DF sample index dtype:", scrap_rate_df.index.dtype)
-        st.write("Part Detail DF sample index dtype:", part_detail_df.index.dtype)
-        st.write("Sample PART_IDs in scrap_rate_df:", scrap_rate_df.index.unique().tolist()[:5])
-        st.write("Sample PART_IDs in part_detail_df:", part_detail_df.index.unique().tolist()[:5])
-        part_detail_df = part_detail_df.join(scrap_rate_df)
-      
+        st.markdown("### Detailed WHY Metrics Table — by Part")    
         st.dataframe(part_detail_df.reset_index()[[
             "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
             "IDEAL_SS", "SS_COMPLIANT_PART", "PO_LEAD_TIME_ACCURATE", "WO_LEAD_TIME_ACCURATE",
@@ -277,5 +282,4 @@ if uploaded_file:
             "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
             "ERP_LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"
         ]])
-
- 
+      
