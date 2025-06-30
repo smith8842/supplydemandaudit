@@ -259,7 +259,6 @@ if uploaded_file:
             RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
             IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
             LT_DAYS=po_order_df["LT_DAYS"],
-            ERP_LEAD_TIME=po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"]),
             WITHIN_10_PERCENT=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= 0.10
         )
 
@@ -272,14 +271,20 @@ if uploaded_file:
             RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
             IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
             LT_DAYS=wo_order_df["WO_LT_DAYS"],
-            ERP_LEAD_TIME=wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"]),
             WITHIN_10_PERCENT=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= 0.10
         )
 
         all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
+      
+        # Final cleanup: remove NaNs and enforce types for consistency
+        all_orders_df = all_orders_df.dropna(subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"])
+        all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
+        all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
+        
+        # Cache in session for AI or multi-page reuse
+        st.session_state["all_orders_df"] = all_orders_df.copy()
 
         st.dataframe(all_orders_df[[
             "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
             "ERP_LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"
         ]])
-      
