@@ -232,6 +232,10 @@ if uploaded_file:
         part_detail_df = part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
         part_detail_df = part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
         part_detail_df = part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
+        st.write("Scrap Rate DF sample index dtype:", scrap_rate_df.index.dtype)
+        st.write("Part Detail DF sample index dtype:", part_detail_df.index.dtype)
+        st.write("Sample PART_IDs in scrap_rate_df:", scrap_rate_df.index.unique().tolist()[:5])
+        st.write("Sample PART_IDs in part_detail_df:", part_detail_df.index.unique().tolist()[:5])
         part_detail_df = part_detail_df.join(scrap_rate_df)
       
         st.dataframe(part_detail_df.reset_index()[[
