@@ -177,8 +177,14 @@ if uploaded_file:
 
   # --- Scrap Rate Calculation (from Scrap sheet) ---
 
-  # Load scrap sheet
-  scrap_df = pd.read_excel(xls, sheet_name="Scrap")
+  # Find actual sheet name matching 'SCRAP' case-insensitively
+  sheet_lookup = {s.lower(): s for s in xls.sheet_names}
+  scrap_sheet_name = sheet_lookup.get("scrap")
+  
+  if scrap_sheet_name:
+      scrap_df = pd.read_excel(xls, sheet_name=scrap_sheet_name)
+  else:
+      st.error("SCRAP sheet not found in uploaded file.")
   
   # Calculate scrap rate per row
   scrap_df["SCRAP_RATE"] = scrap_df["SCRAPPED_QUANTITY"] / scrap_df["TOTAL_PRODUCED_QUANTITY"]
