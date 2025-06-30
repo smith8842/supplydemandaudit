@@ -75,20 +75,19 @@ if uploaded_file:
     what_part_detail_df = what_part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
   
     # Calculate and join statistical ideal safety stock before Min/Max logic
-    ss_temp = part_master_df.set_index("PART_ID").copy()
-    ss_temp = ss_temp.join(std_dev_daily.rename("STD_DEV_CONSUMPTION"))
-    ss_temp["IDEAL_SS"] = z_score * ss_temp["STD_DEV_CONSUMPTION"] * np.sqrt(ss_temp["LEAD_TIME"])
-    what_part_detail_df = what_part_detail_df.join(ss_temp["IDEAL_SS"])
-
-    # MRP-based Excess Logic
     recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
-    recent_consumption = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]
-    
+    recent_consumption = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]    
     daily_consumption = (
         recent_consumption.groupby(["PART_ID", "TRANSACTION_DATE"]).agg({"QUANTITY": "sum"}).reset_index()
     )
     std_dev_daily = daily_consumption.groupby("PART_ID")["QUANTITY"].std().fillna(0)
 
+    ss_temp = part_master_df.set_index("PART_ID").copy()
+    ss_temp = ss_temp.join(std_dev_daily.rename("STD_DEV_CONSUMPTION"))
+    ss_temp["IDEAL_SS"] = z_score * ss_temp["STD_DEV_CONSUMPTION"] * np.sqrt(ss_temp["LEAD_TIME"])
+    what_part_detail_df = what_part_detail_df.join(ss_temp["IDEAL_SS"])
+
+    # MRP-based Excess Logic    
     mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
     lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * lt_buffer_multiplier
     cutoff_dates = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lead_time_buffer, unit="D"))
