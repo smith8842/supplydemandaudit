@@ -148,8 +148,8 @@ if uploaded_file:
     shortage_part_ids = set(ropmm_shortage_parts).union(set(late_pos)).union(set(late_wos))
     what_part_detail_df["SHORTAGE"] = what_part_detail_df.index.isin(shortage_part_ids)
 
-    shortage_percent = (what_part_detail_df["SHORTAGE"].sum() / len(what_df)) * 100
-    excess_percent = (what_part_detail_df["EXCESS"].sum() / len(what_df)) * 100
+    shortage_percent = (what_part_detail_df["SHORTAGE"].sum() / len(what_part_detail_df)) * 100
+    excess_percent = (what_part_detail_df["EXCESS"].sum() / len(what_part_detail_df)) * 100
 
     # -------- WHY Metrics -----------
     # --- PO and WO Late % and Lead Time Accuracy ---
