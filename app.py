@@ -44,8 +44,8 @@ if uploaded_file:
     # Add PART_ID as a visible column (currently only index)
     what_df["PART_ID"] = what_df.index
 
-    # Add PART_NUMBER and PLANNING_METHOD from part_master_df
-    what_df = what_df.join(part_master_df.set_index("PART_ID")[["PART_NUMBER", "PLANNING_METHOD"]])
+    # Confirm essential fields exist (already included from initial join)
+    # No need to rejoin PART_NUMBER or PLANNING_METHOD
 
     # Normalize numeric column types for downstream consistency
     numeric_cols = [
