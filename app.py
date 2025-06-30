@@ -90,7 +90,7 @@ if uploaded_file:
     std_dev_daily = daily_consumption.groupby("PART_ID")["QUANTITY"].std().fillna(0)
 
     mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
-      lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * lt_buffer_multiplier
+    lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * lt_buffer_multiplier
     cutoff_dates = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lead_time_buffer, unit="D"))
     cutoff_dates.name = "CUTOFF_DATE"
     mrp_parts = part_master_df[part_master_df["PLANNING_METHOD"] == "MRP"]["PART_ID"]
@@ -288,10 +288,10 @@ if uploaded_file:
     "IS_LATE": "Whether the order was fulfilled after the need date",
     "ERP_LEAD_TIME": "ERP-defined lead time at the time of order",
     "LT_DAYS": "Actual number of days the order took to fulfill",
-    "LT_ACCURACY_FLAG": "Whether actual lead time was within the defined tolerance % of ERP lead time"
+    "LT_ACCURACY_FLAG": "Whether actual lead time was within the defined tolerance % of ERP lead time",
     "Z_SCORE": "Statistical value used to calculate ideal safety stock. Changes based on the service level you want. Currently set to 1.65 for 95% service level",
     "TRAILING_DAYS": "Number of trailing days used to calculate consumption patterns. Currently set to 90 days",
-    "HIGH_SCRAP_THRESHOLD": "Scrap rate threshold used to flag high-scrap parts. Currently set to 10%"
+    "HIGH_SCRAP_THRESHOLD": "Scrap rate threshold used to flag high-scrap parts. Currently set to 10%",
     "EOQ": "Statistical value that is considered the most economical quantity of a part to order each time based on trailing demand, ordering cost, and holding cost",
     "lt_buffer_multiplier": "Multiplier used to extend ERP lead time for MRP suggestion cutoff checks",
     "inventory_buffer_multiplier": "Multiplier used to adjust Min/Max inventory buffer logic",
