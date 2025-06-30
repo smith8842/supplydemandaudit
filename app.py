@@ -27,7 +27,7 @@ if uploaded_file:
   #  st.write("Columns in PURCHASE_ORDER_LINES:", po_df.columns.tolist())
     wo_df = pd.read_excel(xls, sheet_name="WORK_ORDERS")
     mrp_df = pd.read_excel(xls, sheet_name="MRP_SUGGESTIONS")
-    consumption_df = pd.read_excel(xls, sheet_name="ACTUAL_CONSUMPTION")
+    consumption_df = pd.read_excel(xls, sheet_name="WIP_TRANSACTIONS")
     inventory_df = pd.read_excel(xls, sheet_name="INVENTORY_BALANCES")
 
 # --------------------------------
@@ -157,10 +157,10 @@ if uploaded_file:
 
     # --- Safety Stock Accuracy Calculation ---
     recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
-    recent_consumption = consumption_df[consumption_df["CONSUMPTION_DATE"] >= recent_cutoff]
+    recent_consumption = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]
 
     daily_consumption = (
-        recent_consumption.groupby(["PART_ID", "CONSUMPTION_DATE"]).agg({"QUANTITY": "sum"}).reset_index()
+        recent_consumption.groupby(["PART_ID", "TRANSACTION_DATE"]).agg({"QUANTITY": "sum"}).reset_index()
     )
     std_dev_daily = daily_consumption.groupby("PART_ID")["QUANTITY"].std().fillna(0)
 
@@ -175,25 +175,29 @@ if uploaded_file:
     compliant_parts = ss_df["WITHIN_TOLERANCE"].sum()
     ss_coverage_percent = (compliant_parts / valid_ss_parts * 100) if valid_ss_parts > 0 else 0
 
-  # --- Scrap Rate Calculation (from Scrap sheet) ---
-  
-    sheet_lookup = {s.lower(): s for s in xls.sheet_names}    
-    scrap_df = pd.read_excel(xls, sheet_name="SCRAP")
-  
-    # Calculate scrap rate per row
-    scrap_df["SCRAP_RATE"] = scrap_df["SCRAPPED_QUANTITY"] / scrap_df["TOTAL_PRODUCED_QUANTITY"]
-        
-    # Aggregate to part-level average scrap rate
-    scrap_rate_by_part = scrap_df.groupby("PART_ID")["SCRAP_RATE"].mean()
-        
-    # Join into part_detail_df
+    # --- Scrap Rate Calculation (from WIP_TRANSACTIONS) ---
+    scrap_transactions = consumption_df[consumption_df["TRANSACTION_TYPE"] == "Scrap"]
+    consumed_transactions = consumption_df[
+        consumption_df["TRANSACTION_TYPE"].isin(["Backflush", "Manual Issue"])
+    ]
+
+    total_scrap_by_part = scrap_transactions.groupby("PART_ID")["QUANTITY"].sum()
+    total_consumed_by_part = consumed_transactions.groupby("PART_ID")["QUANTITY"].sum()
+
+    scrap_rate_by_part = total_scrap_by_part / (total_scrap_by_part + total_consumed_by_part)
+    scrap_rate_by_part = scrap_rate_by_part.fillna(0)
+
     part_detail_df = part_detail_df.join(scrap_rate_by_part.rename("AVG_SCRAP_RATE"))
+
+    valid_scrap_parts = scrap_rate_by_part.count()
+    high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
+    high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
         
     # Summary metric: % of parts with scrap rate > threshold
     valid_scrap_parts = scrap_rate_by_part.count()
     high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
     high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
-    
+
 #------------------------------------    
 # ------- UI for Results -----------
 # -----------------------------------
@@ -214,7 +218,7 @@ if uploaded_file:
 
     # --- UI for WHY Metrics ---
     with st.expander("🔍 WHY Metrics Results"):
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
         col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
         col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
