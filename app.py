@@ -40,6 +40,26 @@ if uploaded_file:
     what_df = part_master_df.set_index("PART_ID").join(inventory_agg)
     what_df = what_df.fillna(0)
 
+    # === FINALIZATION PATCH FOR PART-LEVEL AUDIT DF ===
+    # Add PART_ID as a visible column (currently only index)
+    what_df["PART_ID"] = what_df.index
+
+    # Add PART_NUMBER and PLANNING_METHOD from part_master_df
+    what_df = what_df.join(part_master_df.set_index("PART_ID")[["PART_NUMBER", "PLANNING_METHOD"]])
+
+    # Normalize numeric column types for downstream consistency
+    numeric_cols = [
+        "LEAD_TIME", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY",
+        "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", "AVG_DAILY_CONSUMPTION"
+    ]
+    for col in numeric_cols:
+        if col in what_df.columns:
+            what_df[col] = pd.to_numeric(what_df[col], errors="coerce").fillna(0)
+
+    # Normalize planning method as string
+    if "PLANNING_METHOD" in what_df.columns:
+        what_df["PLANNING_METHOD"] = what_df["PLANNING_METHOD"].astype(str)
+
     trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
     trailing_avg_daily = trailing_consumption / trailing_days
     what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
@@ -196,8 +216,8 @@ if uploaded_file:
         ]])
 
         st.markdown("### Detailed WHY Metrics Table — by Order")
-        po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
         po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
+        po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
         po_order_df = po_order_df.assign(
             ORDER_TYPE="PO",
             ORDER_ID=po_order_df["PO_LINE_ID"],
