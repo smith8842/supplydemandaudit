@@ -187,8 +187,7 @@ if uploaded_file:
     scrap_rate_by_part = total_scrap_by_part / (total_scrap_by_part + total_consumed_by_part)
     scrap_rate_by_part = scrap_rate_by_part.fillna(0)
 
-    part_detail_df = part_detail_df.join(scrap_rate_by_part.rename("AVG_SCRAP_RATE"))
-
+    scrap_rate_df = scrap_rate_by_part.rename("AVG_SCRAP_RATE").to_frame()
     valid_scrap_parts = scrap_rate_by_part.count()
     high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
     high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
@@ -233,7 +232,8 @@ if uploaded_file:
         part_detail_df = part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
         part_detail_df = part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
         part_detail_df = part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
-
+        part_detail_df = part_detail_df.join(scrap_rate_df)
+      
         st.dataframe(part_detail_df.reset_index()[[
             "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
             "IDEAL_SS", "SS_COMPLIANT_PART", "PO_LEAD_TIME_ACCURATE", "WO_LEAD_TIME_ACCURATE",
@@ -273,3 +273,5 @@ if uploaded_file:
             "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
             "ERP_LEAD_TIME", "LT_DAYS", "WITHIN_10_PERCENT"
         ]])
+
+ 
