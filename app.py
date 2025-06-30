@@ -183,22 +183,23 @@ if uploaded_file:
   
   if scrap_sheet_name:
       scrap_df = pd.read_excel(xls, sheet_name=scrap_sheet_name)
-  else:
-      st.error("SCRAP sheet not found in uploaded file.")
-  
-  # Calculate scrap rate per row
-  scrap_df["SCRAP_RATE"] = scrap_df["SCRAPPED_QUANTITY"] / scrap_df["TOTAL_PRODUCED_QUANTITY"]
-  
-  # Aggregate to part-level average scrap rate
-  scrap_rate_by_part = scrap_df.groupby("PART_ID")["SCRAP_RATE"].mean()
-  
-  # Join into part_detail_df
-  part_detail_df = part_detail_df.join(scrap_rate_by_part.rename("AVG_SCRAP_RATE"))
-  
-  # Summary metric: % of parts with scrap rate > threshold
-  valid_scrap_parts = scrap_rate_by_part.count()
-  high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
-  high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
+    
+      # Calculate scrap rate per row
+      scrap_df["SCRAP_RATE"] = scrap_df["SCRAPPED_QUANTITY"] / scrap_df["TOTAL_PRODUCED_QUANTITY"]
+      
+      # Aggregate to part-level average scrap rate
+      scrap_rate_by_part = scrap_df.groupby("PART_ID")["SCRAP_RATE"].mean()
+      
+      # Join into part_detail_df
+      part_detail_df = part_detail_df.join(scrap_rate_by_part.rename("AVG_SCRAP_RATE"))
+      
+      # Summary metric: % of parts with scrap rate > threshold
+      valid_scrap_parts = scrap_rate_by_part.count()
+      high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
+      high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
+
+    else:
+        st.error("SCRAP sheet not found in uploaded file.")
 
 #------------------------------------    
 # ------- UI for Results -----------
