@@ -12,8 +12,9 @@ st.title("📊 SD Audit - Full Supply & Demand Health Audit")
 st.markdown("Upload your Oracle-exported Excel file to analyze.")
 
 # Define analysis parameters
-trailing_days = 90
+trailing_days = 90 # number of days analyzed for consumption in the past
 z_score = 1.65  # corresponds to ~95% service level
+high_scrap_threshold = 0.10  # Set high scrap threshold (parameterized)
 
 # Upload Excel file
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
@@ -174,6 +175,25 @@ if uploaded_file:
     compliant_parts = ss_df["WITHIN_TOLERANCE"].sum()
     ss_coverage_percent = (compliant_parts / valid_ss_parts * 100) if valid_ss_parts > 0 else 0
 
+  # --- Scrap Rate Calculation (from Scrap sheet) ---
+
+  # Load scrap sheet
+  scrap_df = pd.read_excel(xls, sheet_name="Scrap")
+  
+  # Calculate scrap rate per row
+  scrap_df["SCRAP_RATE"] = scrap_df["SCRAPPED_QUANTITY"] / scrap_df["TOTAL_PRODUCED_QUANTITY"]
+  
+  # Aggregate to part-level average scrap rate
+  scrap_rate_by_part = scrap_df.groupby("PART_ID")["SCRAP_RATE"].mean()
+  
+  # Join into part_detail_df
+  part_detail_df = part_detail_df.join(scrap_rate_by_part.rename("AVG_SCRAP_RATE"))
+  
+  # Summary metric: % of parts with scrap rate > threshold
+  valid_scrap_parts = scrap_rate_by_part.count()
+  high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
+  high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
+
 #------------------------------------    
 # ------- UI for Results -----------
 # -----------------------------------
@@ -200,6 +220,7 @@ if uploaded_file:
         col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
         col4.metric("🛠️ WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
         col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
+        col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
 
         st.markdown("### Detailed WHY Metrics Table — by Part")
         part_detail_df = part_master_df.copy()
@@ -212,12 +233,12 @@ if uploaded_file:
         st.dataframe(part_detail_df.reset_index()[[
             "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
             "IDEAL_SS", "SS_COMPLIANT_PART", "PO_LEAD_TIME_ACCURATE", "WO_LEAD_TIME_ACCURATE",
-            "AVG_WO_LEAD_TIME", "AVG_PO_LEAD_TIME"
+            "AVG_WO_LEAD_TIME", "AVG_PO_LEAD_TIME", "AVG_SCRAP_RATE"
         ]])
 
         st.markdown("### Detailed WHY Metrics Table — by Order")
         po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
-        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
+        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])        
         po_order_df = po_order_df.assign(
             ORDER_TYPE="PO",
             ORDER_ID=po_order_df["PO_LINE_ID"],
