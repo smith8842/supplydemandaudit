@@ -338,7 +338,11 @@ if uploaded_file:
         st.markdown("### Detailed WHY Metrics Table — by Order")
 
         po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
-        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])        
+        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
+        po_order_df["RECEIPT_DATE"] = pd.to_datetime(po_order_df["RECEIPT_DATE"], errors="coerce")
+        po_order_df["NEED_BY_DATE"] = pd.to_datetime(po_order_df["NEED_BY_DATE"], errors="coerce")
+        po_order_df = po_order_df.dropna(subset=["RECEIPT_DATE", "NEED_BY_DATE"])
+        po_order_df["LT_DAYS"] = (po_order_df["RECEIPT_DATE"] - po_order_df["NEED_BY_DATE"]).dt.days
         po_order_df = po_order_df.assign(
             ORDER_TYPE="PO",
             ORDER_ID=po_order_df["PO_LINE_ID"],
