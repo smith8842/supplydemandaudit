@@ -345,7 +345,6 @@ if uploaded_file:
             NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
             RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
             IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
-            LT_DAYS=po_order_df["LT_DAYS"],
             LT_ACCURACY_FLAG=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
         )
     
