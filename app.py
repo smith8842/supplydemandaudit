@@ -44,6 +44,7 @@ if uploaded_file:
 
     # --- WHAT METRICS ---
 
+    @st.cache_data
     def calculate_what_metrics(part_master_df, inventory_df, consumption_df, mrp_df, po_df, wo_df):
         inventory_agg = inventory_df.groupby("PART_ID")["ON_HAND_QUANTITY"].sum()
         what_df = part_master_df.set_index("PART_ID").join(inventory_agg).fillna(0)
@@ -132,7 +133,8 @@ if uploaded_file:
 
        
     # -------- WHY Metrics -----------
-      
+    
+    @st.cache_data 
     def calculate_why_metrics(part_master_df, consumption_df, po_df, wo_df):
       
         # PO metrics
@@ -215,6 +217,7 @@ if uploaded_file:
 
     # --- Combine WHAT and WHY part-level data ---
 
+    @st.cache_data
     def build_combined_part_df(what_df, why_df):
         combined_df = what_df.set_index("PART_ID").join(
             why_df, how="outer", lsuffix="_what", rsuffix="_why"
@@ -222,7 +225,7 @@ if uploaded_file:
         # Drop duplicate columns if any (e.g., PART_NUMBER or LEAD_TIME)
         combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
         return combined_df.reset_index()
-
+    
     # --- Column Definitions for AI Interpretation ---
     def define_column_dictionary():
         return {
@@ -272,7 +275,6 @@ if uploaded_file:
             "scrap_transaction_type": "Transaction type used to identify scrap in WIP transactions"
         }
 
-
     # Cache dictionary for AI agent access
     column_definitions = define_column_dictionary()
     st.session_state["column_definitions"] = column_definitions
@@ -300,11 +302,12 @@ if uploaded_file:
         col2.metric("📦 % of Parts with Excess Inventory", f"{excess_percent:.1f}%")
         col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
 
+    if st.checkbox("Show detailed WHAT part-level table"):
         st.markdown("### Detailed WHAT Metrics Table")
         st.dataframe(what_part_detail_df[[
-            "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
-            "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
-            "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
+             "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
+             "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
+             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
         ]])
 
     # --- UI for WHY Metrics ---
@@ -317,6 +320,7 @@ if uploaded_file:
         col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
         col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
 
+    if st.checkbox("Show detailed WHY part-level table"):
         st.markdown("### Detailed WHY Metrics Table — by Part")    
         st.dataframe(why_part_detail_df.reset_index()[[
             "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
@@ -324,42 +328,42 @@ if uploaded_file:
             "AVG_WO_LEAD_TIME", "AVG_PO_LEAD_TIME", "AVG_SCRAP_RATE"
         ]])
 
-        st.markdown("### Detailed WHY Metrics Table — by Order")
-        po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
-        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])        
-        po_order_df = po_order_df.assign(
-            ORDER_TYPE="PO",
-            ORDER_ID=po_order_df["PO_LINE_ID"],
-            NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
-            RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
-            IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
-            LT_DAYS=po_order_df["LT_DAYS"],
-            LT_ACCURACY_FLAG=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
-        )
-
-        wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
-        wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
-        wo_order_df = wo_order_df.assign(
-            ORDER_TYPE="WO",
-            ORDER_ID=wo_order_df["WO_ID"],
-            NEED_BY_DATE=wo_order_df["DUE_DATE"],
-            RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
-            IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
-            LT_DAYS=wo_order_df["WO_LT_DAYS"],
-            LT_ACCURACY_FLAG=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
-        )
-
-        all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
-      
-        # Final cleanup: remove NaNs and enforce types for consistency
-        all_orders_df = all_orders_df.dropna(subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"])
-        all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
-        all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
+        if st.checkbox("Show detailed WHY order-level table"):
+            st.markdown("### Detailed WHY Metrics Table — by Order")
+            
+            po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
+            po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])        
+            po_order_df = po_order_df.assign(
+                ORDER_TYPE="PO",
+                ORDER_ID=po_order_df["PO_LINE_ID"],
+                NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
+                RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
+                IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
+                LT_DAYS=po_order_df["LT_DAYS"],
+                LT_ACCURACY_FLAG=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
+            )
         
-        # Cache in session for AI or multi-page reuse
-        st.session_state["all_orders_df"] = all_orders_df.copy()
+            wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
+            wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
+            wo_order_df = wo_order_df.assign(
+                ORDER_TYPE="WO",
+                ORDER_ID=wo_order_df["WO_ID"],
+                NEED_BY_DATE=wo_order_df["DUE_DATE"],
+                RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
+                IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
+                LT_DAYS=wo_order_df["WO_LT_DAYS"],
+                LT_ACCURACY_FLAG=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
+            )
+        
+            all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
+            all_orders_df = all_orders_df.dropna(subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"])
+            all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
+            all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
+            
+            st.session_state["all_orders_df"] = all_orders_df.copy()
+        
+            st.dataframe(all_orders_df[[
+                "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
+                "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
+            ]])
 
-        st.dataframe(all_orders_df[[
-            "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
-            "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
-        ]])
