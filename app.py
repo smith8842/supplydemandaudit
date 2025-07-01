@@ -296,31 +296,32 @@ if uploaded_file:
 # -----------------------------------
 
     # --- UI for WHAT Metrics ---
-    with st.expander("📊 WHAT Metrics Results"):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🔻 % of Parts with Material Shortages", f"{shortage_percent:.1f}%")
-        col2.metric("📦 % of Parts with Excess Inventory", f"{excess_percent:.1f}%")
-        col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
+    st.markdown("📊 WHAT Metrics Results"):
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🔻 % of Parts with Material Shortages", f"{shortage_percent:.1f}%")
+    col2.metric("📦 % of Parts with Excess Inventory", f"{excess_percent:.1f}%")
+    col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
 
-    if st.checkbox("Show detailed WHAT part-level table"):
+    with st.expander("📄 Show detailed WHAT part-level table"):
         st.markdown("### Detailed WHAT Metrics Table")
         st.dataframe(what_part_detail_df[[
-             "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
-             "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
-             "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
+            "PART_NUMBER", "SHORTAGE", "EXCESS", "INVENTORY_TURNS", 
+            "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", 
+            "AVG_DAILY_CONSUMPTION", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "LEAD_TIME"
         ]])
 
-    # --- UI for WHY Metrics ---
-    with st.expander("🔍 WHY Metrics Results"):
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
-        col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
-        col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
-        col4.metric("🛠️ WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
-        col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
-        col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
 
-    if st.checkbox("Show detailed WHY part-level table"):
+    # --- UI for WHY Metrics ---
+    st.markdown("🔍 WHY Metrics Results"):
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
+    col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
+    col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
+    col4.metric("🛠️ WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
+    col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
+    col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
+
+    with st.expander("📄 Show detailed WHY part-level table"):
         st.markdown("### Detailed WHY Metrics Table — by Part")    
         st.dataframe(why_part_detail_df.reset_index()[[
             "PART_ID", "PART_NUMBER", "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION",
@@ -328,7 +329,12 @@ if uploaded_file:
             "AVG_WO_LEAD_TIME", "AVG_PO_LEAD_TIME", "AVG_SCRAP_RATE"
         ]])
 
-        if st.checkbox("Show detailed WHY order-level table"):
+    with st.expander("📄 Show detailed WHY order-level table"):
+        st.markdown("### Detailed WHY Metrics Table — by Order")
+        # (Leave all existing PO/WO logic here unchanged)
+
+
+        with st.expander("📄 Show detailed WHY order-level table"):
             st.markdown("### Detailed WHY Metrics Table — by Order")
             
             po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
