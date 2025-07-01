@@ -3,9 +3,10 @@
 # ----------------------------------------
 
 import streamlit as st
+import openai
 import pandas as pd
 import numpy as np
-import openai
+
 openai_api_key = st.secrets["OPENAI_API_KEY"]
 
 
