@@ -38,17 +38,6 @@ if uploaded_file:
     consumption_df = pd.read_excel(xls, sheet_name="WIP_TRANSACTIONS")
     inventory_df = pd.read_excel(xls, sheet_name="INVENTORY_BALANCES")
 
-    what_part_detail_df, shortage_percent, excess_percent, avg_turns = calculate_what_metrics(
-        part_master_df, inventory_df, consumption_df, mrp_df, po_df, wo_df
-    )
-
-    why_part_detail_df, po_late_percent, wo_late_percent, po_lead_time_accuracy, wo_lead_time_accuracy, ss_coverage_percent, high_scrap_percent = calculate_why_metrics(
-        part_master_df, consumption_df, po_df, wo_df
-    )
-
-    combined_part_detail_df = build_combined_part_df(what_part_detail_df, why_part_detail_df)
-    st.session_state["combined_part_detail_df"] = combined_part_detail_df
-
 # --------------------------------
 # Metrics Calculations
 # --------------------------------
@@ -288,6 +277,17 @@ if uploaded_file:
     column_definitions = define_column_dictionary()
     st.session_state["column_definitions"] = column_definitions
 
+    # NOW insert the function calls here:
+    what_part_detail_df, shortage_percent, excess_percent, avg_turns = calculate_what_metrics(
+        part_master_df, inventory_df, consumption_df, mrp_df, po_df, wo_df
+    )
+
+    why_part_detail_df, po_late_percent, wo_late_percent, po_lead_time_accuracy, wo_lead_time_accuracy, ss_coverage_percent, high_scrap_percent = calculate_why_metrics(
+        part_master_df, consumption_df, po_df, wo_df
+    )
+
+    combined_part_detail_df = build_combined_part_df(what_part_detail_df, why_part_detail_df)
+    st.session_state["combined_part_detail_df"] = combined_part_detail_df
 
 #------------------------------------    
 # ------- UI for Results -----------
