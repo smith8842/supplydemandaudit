@@ -354,13 +354,13 @@ if uploaded_file:
     
         wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
         wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
+        wo_order_df["LT_DAYS"] = wo_order_df["WO_LT_DAYS"]
         wo_order_df = wo_order_df.assign(
             ORDER_TYPE="WO",
             ORDER_ID=wo_order_df["WO_ID"],
             NEED_BY_DATE=wo_order_df["DUE_DATE"],
             RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
             IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
-            LT_DAYS=wo_order_df["WO_LT_DAYS"],
             LT_ACCURACY_FLAG=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
         )
     
