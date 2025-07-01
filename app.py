@@ -44,157 +44,138 @@ if uploaded_file:
 
     # --- WHAT METRICS ---
 
-    # Calculate inventory aggregation and trailing consumption
+    def calculate_what_metrics(part_master_df, inventory_df, consumption_df, mrp_df, po_df, wo_df):
     inventory_agg = inventory_df.groupby("PART_ID")["ON_HAND_QUANTITY"].sum()
-    what_part_detail_df = part_master_df.set_index("PART_ID").join(inventory_agg)
-    what_part_detail_df = what_part_detail_df.fillna(0)
+    what_df = part_master_df.set_index("PART_ID").join(inventory_agg).fillna(0)
+    what_df["PART_ID"] = what_df.index
 
-    # === FINALIZATION PATCH FOR PART-LEVEL AUDIT DF ===
-    # Add PART_ID as a visible column (currently only index)
-    what_part_detail_df["PART_ID"] = what_part_detail_df.index
-
-    # Confirm essential fields exist (already included from initial join)
-    # No need to rejoin PART_NUMBER or PLANNING_METHOD
-
-    # Normalize numeric column types for downstream consistency
-    numeric_cols = [
-        "LEAD_TIME", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY",
-        "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", "AVG_DAILY_CONSUMPTION"
-    ]
+    # Normalize types
+    numeric_cols = ["LEAD_TIME", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY", "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", "AVG_DAILY_CONSUMPTION"]
     for col in numeric_cols:
-        if col in what_part_detail_df.columns:
-            what_part_detail_df[col] = pd.to_numeric(what_part_detail_df[col], errors="coerce").fillna(0)
+        if col in what_df.columns:
+            what_df[col] = pd.to_numeric(what_df[col], errors="coerce").fillna(0)
 
-    # Normalize planning method as string
-    if "PLANNING_METHOD" in what_part_detail_df.columns:
-        what_part_detail_df["PLANNING_METHOD"] = what_part_detail_df["PLANNING_METHOD"].astype(str)
+    if "PLANNING_METHOD" in what_df.columns:
+        what_df["PLANNING_METHOD"] = what_df["PLANNING_METHOD"].astype(str)
 
+    # Consumption stats
     trailing_consumption = consumption_df.groupby("PART_ID")["QUANTITY"].sum()
     trailing_avg_daily = trailing_consumption / trailing_days
-    what_part_detail_df = what_part_detail_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
-    what_part_detail_df = what_part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
-  
-    # Calculate and join statistical ideal safety stock before Min/Max logic
-    recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
-    recent_consumption = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]    
-    daily_consumption = (
-        recent_consumption.groupby(["PART_ID", "TRANSACTION_DATE"]).agg({"QUANTITY": "sum"}).reset_index()
-    )
-    std_dev_daily = daily_consumption.groupby("PART_ID")["QUANTITY"].std().fillna(0)
+    what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
+    what_df = what_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
 
+    # Ideal SS
+    recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
+    recent = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]
+    daily = recent.groupby(["PART_ID", "TRANSACTION_DATE"]).agg({"QUANTITY": "sum"}).reset_index()
+    std_dev_daily = daily.groupby("PART_ID")["QUANTITY"].std().fillna(0)
     ss_temp = part_master_df.set_index("PART_ID").copy()
     ss_temp = ss_temp.join(std_dev_daily.rename("STD_DEV_CONSUMPTION"))
     ss_temp["IDEAL_SS"] = z_score * ss_temp["STD_DEV_CONSUMPTION"] * np.sqrt(ss_temp["LEAD_TIME"])
-    what_part_detail_df = what_part_detail_df.join(ss_temp["IDEAL_SS"])
+    what_df = what_df.join(ss_temp["IDEAL_SS"])
 
-    # MRP-based Excess Logic    
+    # MRP logic
     mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
-    lead_time_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * lt_buffer_multiplier
-    cutoff_dates = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lead_time_buffer, unit="D"))
-    cutoff_dates.name = "CUTOFF_DATE"
+    lt_buffer = part_master_df.set_index("PART_ID")["LEAD_TIME"] * lt_buffer_multiplier
+    cutoff = pd.to_datetime(pd.Timestamp.today() + pd.to_timedelta(lt_buffer, unit="D"))
+    cutoff.name = "CUTOFF_DATE"
     mrp_parts = part_master_df[part_master_df["PLANNING_METHOD"] == "MRP"]["PART_ID"]
 
-    mrp_window_flags = (
+    in_window = (
         mrp_df[mrp_df["PART_ID"].isin(mrp_parts)]
-        .merge(cutoff_dates, left_on="PART_ID", right_index=True)
+        .merge(cutoff, left_on="PART_ID", right_index=True)
         .assign(IN_WINDOW=lambda df: df["NEED_BY_DATE"] <= df["CUTOFF_DATE"])
         .groupby("PART_ID")["IN_WINDOW"].any()
     )
 
-    what_part_detail_df = what_part_detail_df.join(mrp_window_flags.rename("HAS_MRP_WITHIN_LT"))
-    what_part_detail_df["HAS_MRP_WITHIN_LT"] = what_part_detail_df["HAS_MRP_WITHIN_LT"].fillna(False)
-    what_part_detail_df["EXCESS"] = (
-        (what_part_detail_df.index.isin(mrp_parts)) &
-        (~what_part_detail_df["HAS_MRP_WITHIN_LT"]) &
-        (what_part_detail_df["ON_HAND_QUANTITY"] > what_part_detail_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
+    what_df = what_df.join(in_window.rename("HAS_MRP_WITHIN_LT")).fillna({"HAS_MRP_WITHIN_LT": False})
+    what_df["EXCESS"] = (
+        what_df.index.isin(mrp_parts) &
+        ~what_df["HAS_MRP_WITHIN_LT"] &
+        (what_df["ON_HAND_QUANTITY"] > what_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1))
     )
 
-    # ROP / Min-Max Excess Logic
+    # ROP/Min-Max Excess
     ropmm_parts = part_master_df[part_master_df["PLANNING_METHOD"].isin(["ROP", "MIN_MAX"])]
-    what_part_detail_df["IDEAL_MINIMUM"] = (
-    what_part_detail_df["AVG_DAILY_CONSUMPTION"] * 
-    what_part_detail_df["LEAD_TIME"] * inventory_buffer_multiplier + 
-    what_part_detail_df.get("IDEAL_SS", 0)
+    what_df["IDEAL_MINIMUM"] = (
+        what_df["AVG_DAILY_CONSUMPTION"] * what_df["LEAD_TIME"] * inventory_buffer_multiplier +
+        what_df.get("IDEAL_SS", 0)
     )
-    eoq = np.sqrt((2 * what_part_detail_df["TRAILING_CONSUMPTION"] * eoq_order_cost) / eoq_holding_cost_per_unit)  # Approximate EOQ per part using trailing consumption as demand
-    what_part_detail_df["EOQ"] = eoq.fillna(0)
-    what_part_detail_df["IDEAL_MAXIMUM"] = what_part_detail_df["IDEAL_MINIMUM"] + what_part_detail_df["EOQ"]
-    ropmm_excess_parts = what_part_detail_df[
-        (what_part_detail_df.index.isin(ropmm_parts["PART_ID"])) &
-        (what_part_detail_df["ON_HAND_QUANTITY"] > what_part_detail_df["IDEAL_MAXIMUM"])
-    ].index.tolist()
-    what_part_detail_df.loc[ropmm_excess_parts, "EXCESS"] = True
+    eoq = np.sqrt((2 * what_df["TRAILING_CONSUMPTION"] * eoq_order_cost) / eoq_holding_cost_per_unit)
+    what_df["EOQ"] = eoq.fillna(0)
+    what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MINIMUM"] + what_df["EOQ"]
 
-    # Inventory Turns
-    what_part_detail_df["INVENTORY_TURNS"] = what_part_detail_df["TRAILING_CONSUMPTION"] / (what_part_detail_df["ON_HAND_QUANTITY"] + 1)
-    avg_turns = what_part_detail_df["INVENTORY_TURNS"].mean()
+    ropmm_excess_parts = what_df[
+        what_df.index.isin(ropmm_parts["PART_ID"]) &
+        (what_df["ON_HAND_QUANTITY"] > what_df["IDEAL_MAXIMUM"])
+    ].index
+    what_df.loc[ropmm_excess_parts, "EXCESS"] = True
 
-    # Shortage Logic
-    late_pos = po_df[
-        (po_df["STATUS"].str.lower() == "open") &
-        (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])
-    ]["PART_ID"].unique()
+    # Inventory turns
+    what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (what_df["ON_HAND_QUANTITY"] + 1)
+    avg_turns = what_df["INVENTORY_TURNS"].mean()
 
-    late_wos = wo_df[
-        (wo_df["STATUS"].str.lower() == "open") &
-        (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])
-    ]["PART_ID"].unique()
+    # Shortages
+    late_pos = po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])]["PART_ID"].unique()
+    late_wos = wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])]["PART_ID"].unique()
+    ropmm_shortages = what_df[
+        what_df.index.isin(ropmm_parts["PART_ID"]) &
+        (what_df["ON_HAND_QUANTITY"] < what_df["IDEAL_MINIMUM"])
+    ].index
+    shortage_ids = set(ropmm_shortages).union(late_pos).union(late_wos)
+    what_df["SHORTAGE"] = what_df.index.isin(shortage_ids)
 
-    ropmm_shortage_parts = what_part_detail_df[
-        (what_part_detail_df.index.isin(ropmm_parts["PART_ID"])) &
-        (what_part_detail_df["ON_HAND_QUANTITY"] < what_part_detail_df["IDEAL_MINIMUM"])
-    ].index.tolist()
+    shortage_pct = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
+    excess_pct = (what_df["EXCESS"].sum() / len(what_df)) * 100
 
-    shortage_part_ids = set(ropmm_shortage_parts).union(set(late_pos)).union(set(late_wos))
-    what_part_detail_df["SHORTAGE"] = what_part_detail_df.index.isin(shortage_part_ids)
+    return what_df, shortage_pct, excess_pct, avg_turns
 
-    shortage_percent = (what_part_detail_df["SHORTAGE"].sum() / len(what_part_detail_df)) * 100
-    excess_percent = (what_part_detail_df["EXCESS"].sum() / len(what_part_detail_df)) * 100
-
+       
     # -------- WHY Metrics -----------
-    # --- PO and WO Late % and Lead Time Accuracy ---
+      
+    def calculate_why_metrics(part_master_df, consumption_df, po_df, wo_df):
+      
+    # PO metrics
     po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
     po_df["NEED_BY_DATE"] = pd.to_datetime(po_df["NEED_BY_DATE"])
     po_df["LT_DAYS"] = (po_df["RECEIPT_DATE"] - po_df["NEED_BY_DATE"]).dt.days
 
     total_pos = len(po_df)
-    late_pos_count = len(po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])] )
+    late_pos_count = len(po_df[(po_df["STATUS"].str.lower() == "open") & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])])
     po_late_percent = (late_pos_count / total_pos) * 100 if total_pos > 0 else 0
 
     closed_po = po_df[po_df["STATUS"].str.lower() == "closed"]
     lt_accuracy_po = closed_po.groupby("PART_ID").agg(actual_lt=("LT_DAYS", "mean")).dropna()
-    lt_accuracy_po = lt_accuracy_po.join(part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt"))
-    lt_accuracy_po = lt_accuracy_po.dropna()
+    lt_accuracy_po = lt_accuracy_po.join(part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt")).dropna()
     lt_accuracy_po["WITHIN_TOLERANCE"] = (
-    abs(lt_accuracy_po["actual_lt"] - lt_accuracy_po["erp_lt"]) / lt_accuracy_po["erp_lt"]
+        abs(lt_accuracy_po["actual_lt"] - lt_accuracy_po["erp_lt"]) / lt_accuracy_po["erp_lt"]
     ) <= lt_tolerance_pct
     po_lead_time_accuracy = lt_accuracy_po["WITHIN_TOLERANCE"].mean() * 100 if not lt_accuracy_po.empty else 0
 
+    # WO metrics
     wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
     wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
     wo_df["WO_LT_DAYS"] = (wo_df["COMPLETION_DATE"] - wo_df["DUE_DATE"]).dt.days
+
     total_wos = len(wo_df)
-    late_wo_count = len(wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])] )
+    late_wo_count = len(wo_df[(wo_df["STATUS"].str.lower() == "open") & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])])
     wo_late_percent = (late_wo_count / total_wos) * 100 if total_wos > 0 else 0
 
     closed_wo = wo_df[wo_df["STATUS"].str.lower() == "closed"]
     lt_accuracy_wo = closed_wo.groupby("PART_ID").agg(actual_lt=("WO_LT_DAYS", "mean")).dropna()
-    lt_accuracy_wo = lt_accuracy_wo.join(part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt"))
-    lt_accuracy_wo = lt_accuracy_wo.dropna()
+    lt_accuracy_wo = lt_accuracy_wo.join(part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt")).dropna()
     lt_accuracy_wo["WITHIN_TOLERANCE"] = (
-    abs(lt_accuracy_wo["actual_lt"] - lt_accuracy_wo["erp_lt"]) / lt_accuracy_wo["erp_lt"]
+        abs(lt_accuracy_wo["actual_lt"] - lt_accuracy_wo["erp_lt"]) / lt_accuracy_wo["erp_lt"]
     ) <= lt_tolerance_pct
     wo_lead_time_accuracy = lt_accuracy_wo["WITHIN_TOLERANCE"].mean() * 100 if not lt_accuracy_wo.empty else 0
 
-    # --- Safety Stock Accuracy Calculation ---
+    # Safety stock accuracy
     recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
     recent_consumption = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]
+    daily_consumption = recent_consumption.groupby(["PART_ID", "TRANSACTION_DATE"])["QUANTITY"].sum().reset_index()
+    trailing_avg_daily = daily_consumption.groupby("PART_ID")["QUANTITY"].mean().fillna(0)
 
-    daily_consumption = (
-        recent_consumption.groupby(["PART_ID", "TRANSACTION_DATE"]).agg({"QUANTITY": "sum"}).reset_index()
-    )
     std_dev_daily = daily_consumption.groupby("PART_ID")["QUANTITY"].std().fillna(0)
-
     ss_df = part_master_df.set_index("PART_ID").copy()
     ss_df = ss_df.join(std_dev_daily.rename("STD_DEV_CONSUMPTION"))
     ss_df["IDEAL_SS"] = z_score * ss_df["STD_DEV_CONSUMPTION"] * np.sqrt(ss_df["LEAD_TIME"])
@@ -206,13 +187,12 @@ if uploaded_file:
     compliant_parts = ss_df["WITHIN_TOLERANCE"].sum()
     ss_coverage_percent = (compliant_parts / valid_ss_parts * 100) if valid_ss_parts > 0 else 0
 
-    # --- Scrap Rate Calculation (from WIP_TRANSACTIONS) ---
+    # Scrap rates
     scrap_transactions = consumption_df[consumption_df["TRANSACTION_TYPE"] == scrap_transaction_type]
     consumed_transactions = consumption_df[consumption_df["TRANSACTION_TYPE"].isin(valid_consumption_types)]
 
     total_scrap_by_part = scrap_transactions.groupby("PART_ID")["QUANTITY"].sum()
     total_consumed_by_part = consumed_transactions.groupby("PART_ID")["QUANTITY"].sum()
-
     scrap_rate_by_part = total_scrap_by_part / (total_scrap_by_part + total_consumed_by_part)
     scrap_rate_by_part = scrap_rate_by_part.fillna(0)
 
@@ -221,89 +201,83 @@ if uploaded_file:
     high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
     high_scrap_percent = (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
 
-    # --- Finalize part-level audit DataFrame for WHY metrics ---
-    why_part_detail_df = part_master_df.copy()
-    why_part_detail_df = why_part_detail_df.set_index("PART_ID")
-    
-    why_part_detail_df = why_part_detail_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
-    
-    why_part_detail_df = why_part_detail_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(
-        columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
-    
-    why_part_detail_df = why_part_detail_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(
-        columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
-    
-    why_part_detail_df = why_part_detail_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(
-        columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
-    
-    # Ensure index types match before joining scrap rate
-    scrap_rate_df.index = scrap_rate_df.index.astype(why_part_detail_df.index.dtype)
-    why_part_detail_df = why_part_detail_df.join(scrap_rate_df)
+    # Final part-level WHY detail DataFrame
+    why_df = part_master_df.copy().set_index("PART_ID")
+    why_df = why_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+    why_df = why_df.join(ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}))
+    why_df = why_df.join(lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_PO_LEAD_TIME", "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE"}))
+    why_df = why_df.join(lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(columns={"actual_lt": "AVG_WO_LEAD_TIME", "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE"}))
 
-    # Cache part_detail_df in session for reuse by AI agents or multi-page views
-    st.session_state["why_part_detail_df"] = why_part_detail_df.reset_index()
+    scrap_rate_df.index = scrap_rate_df.index.astype(why_df.index.dtype)
+    why_df = why_df.join(scrap_rate_df)
+
+    return why_df, po_late_percent, wo_late_percent, po_lead_time_accuracy, wo_lead_time_accuracy, ss_coverage_percent, high_scrap_percent
 
     # --- Combine WHAT and WHY part-level data ---
-    combined_part_detail_df = what_part_detail_df.set_index("PART_ID").join(
-        why_part_detail_df, how="outer", lsuffix="_what", rsuffix="_why"
+
+    def build_combined_part_df(what_df, why_df):
+    combined_df = what_df.set_index("PART_ID").join(
+        why_df, how="outer", lsuffix="_what", rsuffix="_why"
     )
-    
-    # Remove exact duplicate columns (if any appear in both sides with same name)
-    combined_part_detail_df = combined_part_detail_df.loc[:, ~combined_part_detail_df.columns.duplicated()]
-    
-    # Reset index for agent-friendly format and store in session
-    st.session_state["combined_part_detail_df"] = combined_part_detail_df.reset_index()
+    # Drop duplicate columns if any (e.g., PART_NUMBER or LEAD_TIME)
+    combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
+    return combined_df.reset_index()
+
+    combined_part_detail_df = build_combined_part_df(what_part_detail_df, why_part_detail_df)
+    st.session_state["combined_part_detail_df"] = combined_part_detail_df
 
     # --- Column Definitions for AI Interpretation ---
-    column_definitions = {
-    "PART_ID": "Unique system identifier for each part",
-    "PART_NUMBER": "Visual identifier for each part in ERP and other systems",
-    "PLANNING_METHOD": "The method used for planning this part (e.g., MRP, ROP, Min/Max)",
-    "LEAD_TIME": "ERP-planned lead time in days",
-    "SAFETY_STOCK": "ERP-defined safety stock quantity",
-    "MIN_QTY": "ERP-defined Minimum inventory quantity allowed before reorder is triggered",
-    "MAX_QTY": "ERP-defined Maximum inventory quantity allowed that constrains order quantity",
-    "ON_HAND_QUANTITY": "Current total inventory on hand",
-    "TRAILING_CONSUMPTION": "Total consumption over a defined past period of time",
-    "AVG_DAILY_CONSUMPTION": "Average daily consumption over a defined past period of time",
-    "SHORTAGE": "Flag indicating if the part is in material shortage per MRP",
-    "EXCESS": "Flag indicating if the part has excess inventory over needed demand",
-    "INVENTORY_TURNS": "How often current inventory turns over, or gets consumed, based on trailing consumption",
-    "IDEAL_MINIMUM": "Recommended minimum inventory based on consumption, lead time and statistical calculation",
-    "IDEAL_MAXIMUM": "Recommended maximum inventory based on consumption, lead time and statistical calculation",
-    "HAS_MRP_WITHIN_LT": "Indicates whether MRP has generated a suggested planned order within the part’s lead time",
-    "IDEAL_SS": "Recommended ideal safety stock based on consumption, lead time and statistical calculation",
-    "SS_COMPLIANT_PART": "Whether ERP safety stock is within defined buffer % of the ideal value",
-    "AVG_PO_LEAD_TIME": "Average actual lead time for closed purchase orders",
-    "PO_LEAD_TIME_ACCURATE": "Flag if PO lead time is within defined buffer % of ERP value",
-    "AVG_WO_LEAD_TIME": "Average actual lead time for closed work orders",
-    "WO_LEAD_TIME_ACCURATE": "Flag if WO lead time is within defined buffer % of ERP value",
-    "AVG_SCRAP_RATE": "Average component scrap rate from WIP transactions",
-    "ORDER_TYPE": "Indicates whether the row is a PO or WO",
-    "ORDER_ID": "Unique identifier for each order (PO or WO)",
-    "NEED_BY_DATE": "Required fulfillment date for the order based on MRP",
-    "RECEIPT_DATE": "Actual fulfillment/completion date",
-    "STATUS": "Current order status, typically 'open' or 'closed'",
-    "IS_LATE": "Whether the order was fulfilled after the need date",
-    "ERP_LEAD_TIME": "ERP-defined lead time at the time of order",
-    "LT_DAYS": "Actual number of days the order took to fulfill",
-    "LT_ACCURACY_FLAG": "Whether actual lead time was within the defined tolerance % of ERP lead time",
-    "Z_SCORE": "Statistical value used to calculate ideal safety stock. Changes based on the service level you want. Currently set to 1.65 for 95% service level",
-    "TRAILING_DAYS": "Number of trailing days used to calculate consumption patterns. Currently set to 90 days",
-    "HIGH_SCRAP_THRESHOLD": "Scrap rate threshold used to flag high-scrap parts. Currently set to 10%",
-    "EOQ": "Statistical value that is considered the most economical quantity of a part to order each time based on trailing demand, ordering cost, and holding cost",
-    "lt_buffer_multiplier": "Multiplier used to extend ERP lead time for MRP suggestion cutoff checks",
-    "inventory_buffer_multiplier": "Multiplier used to adjust Min/Max inventory buffer logic",
-    "lt_tolerance_pct": "Tolerance percent used to evaluate lead time accuracy (e.g., 10%)",
-    "ss_tolerance_pct": "Tolerance percent used to evaluate ERP safety stock accuracy",
-    "eoq_order_cost": "Assumed fixed cost per order used to calculate EOQ",
-    "eoq_holding_cost_per_unit": "Assumed holding cost per unit used to calculate EOQ",
-    "valid_consumption_types": "Transaction types counted as valid consumption when calculating scrap",
-    "scrap_transaction_type": "Transaction type used to identify scrap in WIP transactions"
+    def define_column_dictionary():
+        return {
+            "PART_ID": "Unique system identifier for each part",
+            "PART_NUMBER": "Visual identifier for each part in ERP and other systems",
+            "PLANNING_METHOD": "The method used for planning this part (e.g., MRP, ROP, Min/Max)",
+            "LEAD_TIME": "ERP-planned lead time in days",
+            "SAFETY_STOCK": "ERP-defined safety stock quantity",
+            "MIN_QTY": "ERP-defined Minimum inventory quantity allowed before reorder is triggered",
+            "MAX_QTY": "ERP-defined Maximum inventory quantity allowed that constrains order quantity",
+            "ON_HAND_QUANTITY": "Current total inventory on hand",
+            "TRAILING_CONSUMPTION": "Total consumption over a defined past period of time",
+            "AVG_DAILY_CONSUMPTION": "Average daily consumption over a defined past period of time",
+            "SHORTAGE": "Flag indicating if the part is in material shortage per MRP",
+            "EXCESS": "Flag indicating if the part has excess inventory over needed demand",
+            "INVENTORY_TURNS": "How often current inventory turns over, or gets consumed, based on trailing consumption",
+            "IDEAL_MINIMUM": "Recommended minimum inventory based on consumption, lead time and statistical calculation",
+            "IDEAL_MAXIMUM": "Recommended maximum inventory based on consumption, lead time and statistical calculation",
+            "HAS_MRP_WITHIN_LT": "Indicates whether MRP has generated a suggested planned order within the part’s lead time",
+            "IDEAL_SS": "Recommended ideal safety stock based on consumption, lead time and statistical calculation",
+            "SS_COMPLIANT_PART": "Whether ERP safety stock is within defined buffer % of the ideal value",
+            "AVG_PO_LEAD_TIME": "Average actual lead time for closed purchase orders",
+            "PO_LEAD_TIME_ACCURATE": "Flag if PO lead time is within defined buffer % of ERP value",
+            "AVG_WO_LEAD_TIME": "Average actual lead time for closed work orders",
+            "WO_LEAD_TIME_ACCURATE": "Flag if WO lead time is within defined buffer % of ERP value",
+            "AVG_SCRAP_RATE": "Average component scrap rate from WIP transactions",
+            "ORDER_TYPE": "Indicates whether the row is a PO or WO",
+            "ORDER_ID": "Unique identifier for each order (PO or WO)",
+            "NEED_BY_DATE": "Required fulfillment date for the order based on MRP",
+            "RECEIPT_DATE": "Actual fulfillment/completion date",
+            "STATUS": "Current order status, typically 'open' or 'closed'",
+            "IS_LATE": "Whether the order was fulfilled after the need date",
+            "ERP_LEAD_TIME": "ERP-defined lead time at the time of order",
+            "LT_DAYS": "Actual number of days the order took to fulfill",
+            "LT_ACCURACY_FLAG": "Whether actual lead time was within the defined tolerance % of ERP lead time",
+            "Z_SCORE": "Statistical value used to calculate ideal safety stock. Changes based on the service level you want. Currently set to 1.65 for 95% service level",
+            "TRAILING_DAYS": "Number of trailing days used to calculate consumption patterns. Currently set to 90 days",
+            "HIGH_SCRAP_THRESHOLD": "Scrap rate threshold used to flag high-scrap parts. Currently set to 10%",
+            "EOQ": "Statistical value that is considered the most economical quantity of a part to order each time based on trailing demand, ordering cost, and holding cost",
+            "lt_buffer_multiplier": "Multiplier used to extend ERP lead time for MRP suggestion cutoff checks",
+            "inventory_buffer_multiplier": "Multiplier used to adjust Min/Max inventory buffer logic",
+            "lt_tolerance_pct": "Tolerance percent used to evaluate lead time accuracy (e.g., 10%)",
+            "ss_tolerance_pct": "Tolerance percent used to evaluate ERP safety stock accuracy",
+            "eoq_order_cost": "Assumed fixed cost per order used to calculate EOQ",
+            "eoq_holding_cost_per_unit": "Assumed holding cost per unit used to calculate EOQ",
+            "valid_consumption_types": "Transaction types counted as valid consumption when calculating scrap",
+            "scrap_transaction_type": "Transaction type used to identify scrap in WIP transactions"
+        }
 
-    }
 
     # Cache dictionary for AI agent access
+    column_definitions = define_column_dictionary()
     st.session_state["column_definitions"] = column_definitions
 
 
