@@ -331,45 +331,40 @@ if uploaded_file:
 
     with st.expander("📄 Show detailed WHY order-level table"):
         st.markdown("### Detailed WHY Metrics Table — by Order")
-        # (Leave all existing PO/WO logic here unchanged)
 
-
-        with st.expander("📄 Show detailed WHY order-level table"):
-            st.markdown("### Detailed WHY Metrics Table — by Order")
-            
-            po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
-            po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])        
-            po_order_df = po_order_df.assign(
-                ORDER_TYPE="PO",
-                ORDER_ID=po_order_df["PO_LINE_ID"],
-                NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
-                RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
-                IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
-                LT_DAYS=po_order_df["LT_DAYS"],
-                LT_ACCURACY_FLAG=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
-            )
+        po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
+        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])        
+        po_order_df = po_order_df.assign(
+            ORDER_TYPE="PO",
+            ORDER_ID=po_order_df["PO_LINE_ID"],
+            NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
+            RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
+            IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
+            LT_DAYS=po_order_df["LT_DAYS"],
+            LT_ACCURACY_FLAG=(abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"]) / po_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
+        )
+    
+        wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
+        wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
+        wo_order_df = wo_order_df.assign(
+            ORDER_TYPE="WO",
+            ORDER_ID=wo_order_df["WO_ID"],
+            NEED_BY_DATE=wo_order_df["DUE_DATE"],
+            RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
+            IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
+            LT_DAYS=wo_order_df["WO_LT_DAYS"],
+            LT_ACCURACY_FLAG=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
+        )
+    
+        all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
+        all_orders_df = all_orders_df.dropna(subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"])
+        all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
+        all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
         
-            wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
-            wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(part_master_df.set_index("PART_ID")["LEAD_TIME"])
-            wo_order_df = wo_order_df.assign(
-                ORDER_TYPE="WO",
-                ORDER_ID=wo_order_df["WO_ID"],
-                NEED_BY_DATE=wo_order_df["DUE_DATE"],
-                RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
-                IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
-                LT_DAYS=wo_order_df["WO_LT_DAYS"],
-                LT_ACCURACY_FLAG=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
-            )
-        
-            all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
-            all_orders_df = all_orders_df.dropna(subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"])
-            all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
-            all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
-            
-            st.session_state["all_orders_df"] = all_orders_df.copy()
-        
-            st.dataframe(all_orders_df[[
-                "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
-                "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
-            ]])
+        st.session_state["all_orders_df"] = all_orders_df.copy()
+    
+        st.dataframe(all_orders_df[[
+            "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
+            "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
+        ]])
 
