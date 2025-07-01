@@ -361,7 +361,7 @@ if uploaded_file:
             NEED_BY_DATE=wo_order_df["DUE_DATE"],
             RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
             IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
-            LT_ACCURACY_FLAG=(abs(wo_order_df["WO_LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
+            LT_ACCURACY_FLAG=(abs(wo_order_df["LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"]) / wo_order_df["ERP_LEAD_TIME"]) <= lt_tolerance_pct
         )
     
         all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
