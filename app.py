@@ -10,27 +10,6 @@ import numpy as np
 # --- OpenAI API Test Block ---
 import openai
 
-if openai_api_key:
-    openai.api_key = openai_api_key
-
-    st.markdown("---")
-    st.subheader("🧪 OpenAI API Test")
-
-    if st.button("Run Test Query"):
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": "What is a safety stock and why is it important?"}
-                ],
-                temperature=0.5
-            )
-            st.success("API call succeeded!")
-            st.write(response.choices[0].message["content"])
-        except Exception as e:
-            st.error(f"OpenAI API call failed: {e}")
-
 
 
 # Set up page
@@ -394,5 +373,28 @@ if uploaded_file:
             "ORDER_TYPE", "ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE", "STATUS", "IS_LATE",
             "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
         ]])
+
+    if openai_api_key:
+        openai.api_key = openai_api_key
+    
+        st.markdown("---")
+        st.subheader("🧪 OpenAI API Test")
+    
+        if st.button("Run Test Query"):
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": "What is a safety stock and why is it important?"}
+                    ],
+                    temperature=0.5
+                )
+                st.success("API call succeeded!")
+                st.write(response.choices[0].message["content"])
+            except Exception as e:
+                st.error(f"OpenAI API call failed: {e}")
+
+
 
     
