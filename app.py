@@ -3,12 +3,10 @@
 # ----------------------------------------
 
 import streamlit as st
-openai_api_key = st.secrets["OPENAI_API_KEY"]
 import pandas as pd
 import numpy as np
-
-# --- OpenAI API Test Block ---
 import openai
+openai_api_key = st.secrets["OPENAI_API_KEY"]
 
 
 
@@ -374,6 +372,7 @@ if uploaded_file:
             "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
         ]])
 
+    # --- OpenAI API Test Block ---
     if openai_api_key:
         openai.api_key = openai_api_key
     
