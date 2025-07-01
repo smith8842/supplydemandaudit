@@ -296,7 +296,7 @@ if uploaded_file:
 # -----------------------------------
 
     # --- UI for WHAT Metrics ---
-    st.markdown("📊 WHAT Metrics Results"):
+    st.markdown("📊 WHAT Metrics Results")
     col1, col2, col3 = st.columns(3)
     col1.metric("🔻 % of Parts with Material Shortages", f"{shortage_percent:.1f}%")
     col2.metric("📦 % of Parts with Excess Inventory", f"{excess_percent:.1f}%")
@@ -312,7 +312,7 @@ if uploaded_file:
 
 
     # --- UI for WHY Metrics ---
-    st.markdown("🔍 WHY Metrics Results"):
+    st.markdown("🔍 WHY Metrics Results")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
     col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
