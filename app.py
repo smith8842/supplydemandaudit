@@ -6,8 +6,11 @@ import streamlit as st
 import openai
 import pandas as pd
 import numpy as np
+from pandasai import PandasAI
+from pandasai.llm.openai import OpenAI
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
+pandas_ai = PandasAI(OpenAI(api_token=openai_api_key))
 
 
 
@@ -378,28 +381,42 @@ if uploaded_file:
         ]])
 
     # --- OpenAI API Test Block ---
-    if openai_api_key:
-        openai.api_key = openai_api_key
-        openai.organization = "org-3Va0Uv9V3lCF4EWsBURKlCAG"
-    
-        st.markdown("---")
-        st.subheader("🧪 OpenAI API Test")
-    
-        if st.button("Run Test Query"):
-            try:
-                response = openai.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": "What is a safety stock and why is it important?"}
-                    ],
-                    temperature=0.5
-                )
+  if openai_api_key:
+    openai.api_key = openai_api_key
 
-                st.success("API call succeeded!")
-                st.write(response.choices[0].message.content)
-            except Exception as e:
-                st.error(f"OpenAI API call failed: {e}")
+    st.markdown("---")
+    st.subheader("🧪 OpenAI API Test")
+
+    st.markdown("---")
+    st.subheader("🤖 Ask Your Data (PandasAI Test)")
+    user_prompt = st.text_area("Ask a question about your audit data:")
+
+    if user_prompt and st.button("Run PandasAI Query"):
+        try:
+            response = pandas_ai.run(st.session_state["combined_part_detail_df"], prompt=user_prompt)
+            st.success("PandasAI response:")
+            st.write(response)
+        except Exception as e:
+            st.error(f"PandasAI call failed: {e}")
+
+
+    if st.button("Run Test Query"):
+        try:
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "What is a safety stock and why is it important?"}
+                ],
+                temperature=0.5,
+                max_tokens=200  # 🔒 limits output to ~150–200 words
+            )
+
+
+            st.success("API call succeeded!")
+            st.write(response.choices[0].message.content)
+        except Exception as e:
+            st.error(f"OpenAI API call failed: {e}")
 
 
 
