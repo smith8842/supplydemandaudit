@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
-st.write(st.secrets["OPENAI_API_KEY"])  # Temporarily to verify key is correctly loaded
+
 
 
 
@@ -380,6 +380,7 @@ if uploaded_file:
     # --- OpenAI API Test Block ---
     if openai_api_key:
         openai.api_key = openai_api_key
+        openai.organization = "org-3Va0Uv9V3lCF4EWsBURKlCAG"
     
         st.markdown("---")
         st.subheader("🧪 OpenAI API Test")
