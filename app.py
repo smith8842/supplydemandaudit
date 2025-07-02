@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
+st.write(st.secrets["OPENAI_API_KEY"])  # Temporarily to verify key is correctly loaded
 
 
 
