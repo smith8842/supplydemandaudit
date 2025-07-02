@@ -385,7 +385,7 @@ if uploaded_file:
     
         if st.button("Run Test Query"):
             try:
-                response = openai.ChatCompletion.create(
+                response = client.chat.completions.create(
                     model="gpt-4",
                     messages=[
                         {"role": "system", "content": "You are a helpful assistant."},
@@ -393,8 +393,9 @@ if uploaded_file:
                     ],
                     temperature=0.5
                 )
+
                 st.success("API call succeeded!")
-                st.write(response.choices[0].message["content"])
+                st.write(response.choices[0].message.content)
             except Exception as e:
                 st.error(f"OpenAI API call failed: {e}")
 
