@@ -1,7 +1,7 @@
 # ----------------------------------------
 # SD Audit - All Metrics Grouped by Oracle-Aligned Schema
 # ----------------------------------------
-
+st.info("✅ App loaded successfully — waiting for file upload or input.")
 import streamlit as st
 import openai
 import pandas as pd
