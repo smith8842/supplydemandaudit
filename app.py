@@ -1,21 +1,13 @@
 # ----------------------------------------
 # SD Audit - All Metrics Grouped by Oracle-Aligned Schema
 # ----------------------------------------
-st.info("✅ App loaded successfully — waiting for file upload or input.")
+
 import streamlit as st
 import openai
 import pandas as pd
 import numpy as np
-from pandasai import PandasAI
-from pandasai.llm.openai import OpenAI
 
-try:
-    openai_api_key = st.secrets["OPENAI_API_KEY"]
-except Exception as e:
-    openai_api_key = None
-    st.warning("OpenAI API key not found. Check your Streamlit secrets.")
-
-pandas_ai = PandasAI(OpenAI(api_token=openai_api_key))
+openai_api_key = st.secrets["OPENAI_API_KEY"]
 
 
 
@@ -385,56 +377,33 @@ if uploaded_file:
             "ERP_LEAD_TIME", "LT_DAYS", "LT_ACCURACY_FLAG"
         ]])
 
-# ----------------------------
-# OpenAI API Test Block
-# ----------------------------
-if openai_api_key:
-    openai.api_key = openai_api_key
+    # --- OpenAI API Test Block ---
+    if openai_api_key:
+        openai.api_key = openai_api_key
+        openai.organization = "org-3Va0Uv9V3lCF4EWsBURKlCAG"
+    
+        st.markdown("---")
+        st.subheader("🧪 OpenAI API Test")
+    
+        if st.button("Run Test Query"):
+            try:
+                response = openai.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": "What is a safety stock and why is it important?"}
+                    ],
+                    temperature=0.5
+                )
 
-    st.markdown("---")
-    st.subheader("🧪 OpenAI API Test")
-
-    if st.button("Run Test Query"):
-        try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": "What is a safety stock and why is it important?"}
-                ],
-                temperature=0.5,
-                max_tokens=200
-            )
-            st.success("API call succeeded!")
-            st.write(response.choices[0].message.content)
-        except Exception as e:
-            st.error(f"OpenAI API call failed: {e}")
-else:
-    st.warning("OpenAI API key not found. Please check your Streamlit secrets.")
-
-
-# ----------------------------
-# PandasAI Agent Test Block
-# ----------------------------
-st.markdown("---")
-st.subheader("🤖 Ask Your Data (PandasAI Test)")
-
-if "combined_part_detail_df" in st.session_state:
-    user_prompt = st.text_area("Ask a question about your audit data:")
-
-    if user_prompt and st.button("Run PandasAI Query"):
-        try:
-            response = pandas_ai.run(
-                st.session_state["combined_part_detail_df"], 
-                prompt=user_prompt
-            )
-            st.success("PandasAI response:")
-            st.write(response)
-        except Exception as e:
-            st.error(f"PandasAI call failed: {e}")
-else:
-    st.info("Upload a file to enable AI-powered data Q&A.")
+                st.success("API call succeeded!")
+                st.write(response.choices[0].message.content)
+            except Exception as e:
+                st.error(f"OpenAI API call failed: {e}")
 
 
 
     
+      
+   
+ 
