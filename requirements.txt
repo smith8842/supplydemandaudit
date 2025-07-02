@@ -3,3 +3,6 @@ pandas
 openpyxl
 numpy
 openai
+pandasai
+matplotlib
+seaborn
