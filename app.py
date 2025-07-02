@@ -9,7 +9,12 @@ import numpy as np
 from pandasai import PandasAI
 from pandasai.llm.openai import OpenAI
 
-openai_api_key = st.secrets["OPENAI_API_KEY"]
+try:
+    openai_api_key = st.secrets["OPENAI_API_KEY"]
+except Exception as e:
+    openai_api_key = None
+    st.warning("OpenAI API key not found. Check your Streamlit secrets.")
+
 pandas_ai = PandasAI(OpenAI(api_token=openai_api_key))
 
 
