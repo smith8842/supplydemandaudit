@@ -1,0 +1,8 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\david\\Documents\\sd-audit\\venv\\Scripts\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.env.windows": {
+        "VIRTUAL_ENV": "C:\\Users\\david\\Documents\\sd-audit\\venv",
+        "PATH": "C:\\Users\\david\\Documents\\sd-audit\\venv\\Scripts;${env:PATH}"
+    }
+}
