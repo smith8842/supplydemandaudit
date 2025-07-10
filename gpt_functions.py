@@ -448,12 +448,103 @@ def get_late_orders_summary(
     ].to_dict("records")
 
 
-# ---------- Combined Function Call -----------
+# ---------- Combined Function Call ---------
+
+import re
+
+
+def detect_functions_from_prompt(prompt: str):
+    """
+    Uses GPT to identify audit functions AND whether the user intends 'intersection' (AND) or 'union' (OR) logic.
+    Returns:
+        - A list of function names (e.g., ["get_lead_time_accuracy_summary", ...])
+        - A match type string: "intersection" or "union"
+    """
+    client = OpenAIClient(api_key=openai_api_key)
+
+    function_descriptions = "\n".join(
+        f"- {spec['name']}: {spec['description']}" for spec in all_function_specs
+    )
+
+    system_prompt = (
+        "You are an intelligent audit assistant. You will receive a list of supply chain audit functions and a user prompt.\n"
+        "Your job is to:\n"
+        "1. Identify which functions are relevant.\n"
+        "2. Determine whether the user is asking for results that match ALL functions (AND/intersection) or ANY function (OR/union).\n"
+        "You MUST return a valid JSON dictionary like this:\n"
+        "{\n"
+        '  "functions": ["get_x", "get_y"],\n'
+        '  "match_type": "intersection"\n'
+        "}\n"
+        "Use 'intersection' if the user seems to expect all conditions to be true (e.g. 'and', 'both').\n"
+        "Use 'union' if the user asks for any of several options (e.g. 'or', 'either')."
+    )
+
+    user_prompt = (
+        f"Available functions:\n{function_descriptions}\n\n"
+        f"User prompt:\n{prompt}\n\n"
+        "Return a JSON dictionary with keys 'functions' and 'match_type'."
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+
+    raw = response.choices[0].message.content.strip()
+
+    # Remove markdown wrapping if present
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip("json").strip()
+
+    try:
+        parsed = json.loads(raw)
+        functions = parsed.get("functions", [])
+        match_type = parsed.get("match_type", "intersection").lower()
+        return functions, match_type
+    except Exception as e:
+        print(f"⚠️ Failed to parse GPT response: {e}")
+        return [], "intersection"
+
+
+# -------- Prompt Parameter Extraction ---------------
+
+
+def extract_common_parameters(prompt: str) -> dict:
+    prompt = prompt.lower()
+    params = {}
+
+    if "top 5" in prompt:
+        params["top_n"] = 5
+    elif "top 10" in prompt:
+        params["top_n"] = 10
+    elif "top 3" in prompt:
+        params["top_n"] = 3
+
+    if "worst" in prompt or "lowest" in prompt:
+        params["accuracy_filter"] = "inaccurate"
+    elif "best" in prompt or "highest" in prompt:
+        params["accuracy_filter"] = "accurate"
+
+    if "po" in prompt:
+        params["order_type"] = "PO"
+    elif "wo" in prompt:
+        params["order_type"] = "WO"
+
+    return params
+
+
+# ---------- Routed Function Call -----------
 
 
 def route_gpt_function_call(name: str, args: dict):
     """
     Routes GPT function call name to the corresponding Python function.
+    Filters args based on function signature.
     """
     router = {
         "get_material_shortage_summary": get_material_shortage_summary,
@@ -465,10 +556,18 @@ def route_gpt_function_call(name: str, args: dict):
         "get_late_orders_summary": get_late_orders_summary,
     }
 
-    if name in router:
-        return router[name](**args)
-    else:
+    if name not in router:
         return f"⚠️ No matching function found for: {name}"
+
+    fn = router[name]
+
+    # Filter args based on the function's accepted parameters
+    import inspect
+
+    sig = inspect.signature(fn)
+    accepted_args = {k: v for k, v in args.items() if k in sig.parameters}
+
+    return fn(**accepted_args)
 
 
 # ----------------------------------------
