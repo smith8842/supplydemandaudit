@@ -1,1 +1,6 @@
 .\venv\Scripts\activate
+streamlit run app.py
+
+# Deleting Cache
+del /s *.pyc
+rmdir /s /q __pycache__

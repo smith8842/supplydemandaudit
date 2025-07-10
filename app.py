@@ -6,16 +6,39 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import openai
+import json
+
+
+from gpt_functions import (
+    get_material_shortage_summary,
+    get_excess_inventory_summary,
+    get_inventory_turns_summary,
+    get_scrap_rate_summary,
+    get_lead_time_accuracy_summary,
+    get_ss_accuracy_summary,
+    get_late_orders_summary,
+    route_gpt_function_call,
+    shortage_function_spec,
+    excess_function_spec,
+    inventory_turns_function_spec,
+    scrap_rate_function_spec,
+    lead_time_accuracy_function_spec,
+    ss_accuracy_function_spec,
+    late_orders_function_spec,
+    all_function_specs,
+)
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
 
 # st.write("✅ App loaded successfully. Waiting for file upload.")
+
 
 def normalize_numeric_columns(df, cols):
     for col in cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
+
 
 # Set up page
 st.set_page_config(page_title="SD Audit - All Metrics", layout="wide")
@@ -34,7 +57,9 @@ if openai_api_key:
 
     if st.button("Run Test Query"):
         try:
-            client = OpenAIClient(api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG")
+            client = OpenAIClient(
+                api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+            )
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -104,11 +129,22 @@ if uploaded_file:
         what_df["PART_ID"] = what_df.index
 
         numeric_cols_what = [
-            "LEAD_TIME", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY",
-            "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", "AVG_DAILY_CONSUMPTION"
+            "LEAD_TIME",
+            "SAFETY_STOCK",
+            "MIN_QTY",
+            "MAX_QTY",
+            "ON_HAND_QUANTITY",
+            "TRAILING_CONSUMPTION",
+            "AVG_DAILY_CONSUMPTION",
+            "LATE_MRP_NEED_QTY",
+            "IDEAL_MINIMUM",
+            "IDEAL_MAXIMUM",
+            "EOQ",
+            "INVENTORY_TURNS",
+            "SHORTAGE_AMOUNT",
+            "EXCESS_AMOUNT",
         ]
         what_df = normalize_numeric_columns(what_df, numeric_cols_what)
-
 
         if "PLANNING_METHOD" in what_df.columns:
             what_df["PLANNING_METHOD"] = what_df["PLANNING_METHOD"].astype(str)
@@ -118,6 +154,7 @@ if uploaded_file:
         trailing_avg_daily = trailing_consumption / trailing_days
         what_df = what_df.join(trailing_consumption.rename("TRAILING_CONSUMPTION"))
         what_df = what_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
+
         # Ideal SS
         recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
         recent = consumption_df[consumption_df["TRANSACTION_DATE"] >= recent_cutoff]
@@ -133,7 +170,8 @@ if uploaded_file:
             z_score * ss_temp["STD_DEV_CONSUMPTION"] * np.sqrt(ss_temp["LEAD_TIME"])
         )
         what_df = what_df.join(ss_temp["IDEAL_SS"])
-        # MRP logic
+
+        # Cutoff Date Calculations
         mrp_df["NEED_BY_DATE"] = pd.to_datetime(mrp_df["NEED_BY_DATE"])
         lt_buffer = (
             part_master_df.set_index("PART_ID")["LEAD_TIME"] * lt_buffer_multiplier
@@ -154,18 +192,7 @@ if uploaded_file:
             .any()
         )
 
-        what_df = what_df.join(in_window.rename("HAS_MRP_WITHIN_LT")).fillna(
-            {"HAS_MRP_WITHIN_LT": False}
-        )
-        what_df["EXCESS"] = (
-            what_df.index.isin(mrp_parts)
-            & ~what_df["HAS_MRP_WITHIN_LT"]
-            & (
-                what_df["ON_HAND_QUANTITY"]
-                > what_df[["SAFETY_STOCK", "MIN_QTY"]].max(axis=1)
-            )
-        )
-        # ROP/Min-Max Excess
+        # Ideal Min, Max and EOQ Calculations
         ropmm_parts = part_master_df[
             part_master_df["PLANNING_METHOD"].isin(["ROP", "MIN_MAX"])
         ]
@@ -184,36 +211,88 @@ if uploaded_file:
             & (what_df["ON_HAND_QUANTITY"] > what_df["IDEAL_MAXIMUM"])
         ].index
         what_df.loc[ropmm_excess_parts, "EXCESS"] = True
+
         # Inventory turns
         what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (
             what_df["ON_HAND_QUANTITY"] + 1
         )
         avg_turns = what_df["INVENTORY_TURNS"].mean()
-        # Shortages
-        late_pos = po_df[
-            (po_df["STATUS"].str.lower() == "open")
-            & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])
-        ]["PART_ID"].unique()
-        late_wos = wo_df[
-            (wo_df["STATUS"].str.lower() == "open")
-            & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])
-        ]["PART_ID"].unique()
-        ropmm_shortages = what_df[
-            what_df.index.isin(ropmm_parts["PART_ID"])
-            & (what_df["ON_HAND_QUANTITY"] < what_df["IDEAL_MINIMUM"])
-        ].index
-        shortage_ids = set(ropmm_shortages).union(late_pos).union(late_wos)
-        what_df["SHORTAGE"] = what_df.index.isin(shortage_ids)
 
+        # --- Create new field: LATE_MRP_NEED_QUANTITY ---
+        # Total sum of all late POs for each part
+        late_po_qty = (
+            po_df[
+                (po_df["STATUS"].str.lower() == "open")
+                & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])
+            ]
+            .groupby("PART_ID")["ORDER_QUANTITY"]
+            .sum()
+        )
+        # Total sum of all late WOs for each part
+        late_wo_qty = (
+            wo_df[
+                (wo_df["STATUS"].str.lower() == "open")
+                & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])
+            ]
+            .groupby("PART_ID")["QUANTITY"]
+            .sum()
+        )
+        # Total sum of all late MRP messages within LT for each part
+        late_mrp_qty = (
+            mrp_df.merge(cutoff, left_on="PART_ID", right_index=True)
+            .query("NEED_BY_DATE <= CUTOFF_DATE")
+            .groupby("PART_ID")["QUANTITY"]
+            .sum()
+        )
+        # Combine all quantities
+        late_total = late_po_qty.add(late_wo_qty, fill_value=0).add(
+            late_mrp_qty, fill_value=0
+        )
+        # Add to what_df
+        what_df["LATE_MRP_NEED_QTY"] = (
+            what_df.index.to_series().map(late_total).fillna(0).round(2)
+        )
+
+        # --- Unified SHORTAGE_AMOUNT calculation (after late MRP need is computed) ---
+        def compute_shortage_amount(row):
+            if row["PLANNING_METHOD"] == "MRP":
+                return max(
+                    round(row["LATE_MRP_NEED_QTY"] - row["ON_HAND_QUANTITY"], 2), 0
+                )
+            elif row["PLANNING_METHOD"] in ["ROP", "MIN_MAX"]:
+                return max(round(row["IDEAL_MINIMUM"] - row["ON_HAND_QUANTITY"], 2), 0)
+            else:
+                return 0
+
+        # --- Defines a Shortage T/F based on Shortage amount
+        what_df["SHORTAGE_AMOUNT"] = what_df.apply(compute_shortage_amount, axis=1)
+        what_df["SHORTAGE"] = what_df["SHORTAGE_AMOUNT"] > 0
+
+        # --- Unified EXCESS_AMOUNT calculation ---
+        def compute_excess_amount(row):
+            if row["PLANNING_METHOD"] == "MRP":
+                return max(
+                    round(row["ON_HAND_QUANTITY"] - row["LATE_MRP_NEED_QTY"], 2), 0
+                )
+            elif row["PLANNING_METHOD"] in ["ROP", "MIN_MAX"]:
+                return max(round(row["ON_HAND_QUANTITY"] - row["IDEAL_MAXIMUM"], 2), 0)
+            else:
+                return 0
+
+        what_df["EXCESS_AMOUNT"] = what_df.apply(compute_excess_amount, axis=1)
+        what_df["EXCESS"] = what_df["EXCESS_AMOUNT"] > 0
+
+        # Calculate final summary metrics
         shortage_pct = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
         excess_pct = (what_df["EXCESS"].sum() / len(what_df)) * 100
 
         return what_df, shortage_pct, excess_pct, avg_turns
-      
+
     # -------- WHY Metrics -----------
 
     @st.cache_data
     def calculate_why_metrics(part_master_df, consumption_df, po_df, wo_df):
+
         # PO metrics
         po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
         po_df["NEED_BY_DATE"] = pd.to_datetime(po_df["NEED_BY_DATE"])
@@ -244,6 +323,7 @@ if uploaded_file:
             if not lt_accuracy_po.empty
             else 0
         )
+
         # WO metrics
         wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
         wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
@@ -274,6 +354,51 @@ if uploaded_file:
             if not lt_accuracy_wo.empty
             else 0
         )
+
+        # --- Combined PO + WO Lead Time Accuracy (weighted by volume) ---
+        # Count of closed orders
+        po_counts = closed_po.groupby("PART_ID").size().rename("PO_COUNT")
+        wo_counts = closed_wo.groupby("PART_ID").size().rename("WO_COUNT")
+
+        # Combine counts
+        lt_counts = pd.concat([po_counts, wo_counts], axis=1).fillna(0)
+        lt_counts["TOTAL_COUNT"] = lt_counts["PO_COUNT"] + lt_counts["WO_COUNT"]
+
+        # Merge average LTs from previous calculations
+        combined_lt_df = pd.DataFrame(index=part_master_df["PART_ID"])
+        combined_lt_df["ERP_LEAD_TIME"] = part_master_df.set_index("PART_ID")[
+            "LEAD_TIME"
+        ]
+        combined_lt_df["AVG_PO_LEAD_TIME"] = lt_accuracy_po["actual_lt"]
+        combined_lt_df["AVG_WO_LEAD_TIME"] = lt_accuracy_wo["actual_lt"]
+        combined_lt_df = combined_lt_df.join(lt_counts)
+
+        # Compute weighted average lead time
+        combined_lt_df["COMBINED_LT"] = (
+            (combined_lt_df["AVG_PO_LEAD_TIME"] * combined_lt_df["PO_COUNT"].fillna(0))
+            + (
+                combined_lt_df["AVG_WO_LEAD_TIME"]
+                * combined_lt_df["WO_COUNT"].fillna(0)
+            )
+        ) / combined_lt_df["TOTAL_COUNT"]
+
+        combined_lt_df["COMBINED_LT_ACCURATE"] = (
+            abs(combined_lt_df["COMBINED_LT"] - combined_lt_df["ERP_LEAD_TIME"])
+            / combined_lt_df["ERP_LEAD_TIME"]
+        ) <= lt_tolerance_pct
+
+        combined_lt_accuracy = (
+            combined_lt_df["COMBINED_LT_ACCURATE"].mean() * 100
+            if "COMBINED_LT_ACCURATE" in combined_lt_df.columns
+            else 0
+        )
+
+        # Accuracy flag
+        combined_lt_df["COMBINED_LT_ACCURATE"] = (
+            abs(combined_lt_df["COMBINED_LT"] - combined_lt_df["ERP_LEAD_TIME"])
+            / combined_lt_df["ERP_LEAD_TIME"]
+        ) <= lt_tolerance_pct
+
         # Safety stock accuracy
         recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
         recent_consumption = consumption_df[
@@ -351,13 +476,21 @@ if uploaded_file:
                 }
             )
         )
+        # Add combined LT accuracy to why_df
+        why_df = why_df.join(combined_lt_df[["COMBINED_LT", "COMBINED_LT_ACCURATE"]])
 
         scrap_rate_df.index = scrap_rate_df.index.astype(why_df.index.dtype)
         why_df = why_df.join(scrap_rate_df)
 
         numeric_cols_why = [
-            "LEAD_TIME", "SAFETY_STOCK", "AVG_DAILY_CONSUMPTION", "IDEAL_SS",
-            "AVG_PO_LEAD_TIME", "AVG_WO_LEAD_TIME", "AVG_SCRAP_RATE"
+            "LEAD_TIME",
+            "SAFETY_STOCK",
+            "AVG_DAILY_CONSUMPTION",
+            "IDEAL_SS",
+            "AVG_PO_LEAD_TIME",
+            "AVG_WO_LEAD_TIME",
+            "AVG_SCRAP_RATE",
+            "COMBINED_LT",
         ]
         why_df = normalize_numeric_columns(why_df, numeric_cols_why)
 
@@ -367,9 +500,11 @@ if uploaded_file:
             wo_late_percent,
             po_lead_time_accuracy,
             wo_lead_time_accuracy,
+            combined_lt_accuracy,
             ss_coverage_percent,
             high_scrap_percent,
         )
+
     # --- Combine WHAT and WHY part-level data ---
 
     @st.cache_data
@@ -427,7 +562,11 @@ if uploaded_file:
             "eoq_holding_cost_per_unit": "Assumed holding cost per unit used to calculate EOQ",
             "valid_consumption_types": "Transaction types counted as valid consumption when calculating scrap",
             "scrap_transaction_type": "Transaction type used to identify scrap in WIP transactions",
+            "LATE_MRP_NEED_QTY": "Total quantity of demand covered by late POs, late WOs, or MRP suggestions within lead time. Represents unfulfilled or misaligned supply.",
+            "SHORTAGE_AMOUNT": "The numeric quantity by which a part is short, based on its planning method. For ROP/Min/Max parts, this is Ideal Min - On Hand. For MRP parts, this is Late MRP Need - On Hand.",
+            "EXCESS_AMOUNT": "The numeric quantity of excess inventory. For ROP/MinMax, it's On Hand - Ideal Max. For MRP, it's On Hand - Late MRP Need.",
         }
+
     # Cache dictionary for AI agent access
     column_definitions = define_column_dictionary()
     st.session_state["column_definitions"] = column_definitions
@@ -443,6 +582,7 @@ if uploaded_file:
         wo_late_percent,
         po_lead_time_accuracy,
         wo_lead_time_accuracy,
+        combined_lt_accuracy,
         ss_coverage_percent,
         high_scrap_percent,
     ) = calculate_why_metrics(part_master_df, consumption_df, po_df, wo_df)
@@ -450,14 +590,33 @@ if uploaded_file:
         what_part_detail_df, why_part_detail_df
     )
     numeric_cols_combined = [
-        "LEAD_TIME", "SAFETY_STOCK", "MIN_QTY", "MAX_QTY",
-        "ON_HAND_QUANTITY", "TRAILING_CONSUMPTION", "AVG_DAILY_CONSUMPTION",
-        "IDEAL_SS", "AVG_PO_LEAD_TIME", "AVG_WO_LEAD_TIME", "AVG_SCRAP_RATE"
+        "LEAD_TIME",
+        "SAFETY_STOCK",
+        "MIN_QTY",
+        "MAX_QTY",
+        "ON_HAND_QUANTITY",
+        "TRAILING_CONSUMPTION",
+        "AVG_DAILY_CONSUMPTION",
+        "IDEAL_SS",
+        "AVG_PO_LEAD_TIME",
+        "AVG_WO_LEAD_TIME",
+        "AVG_SCRAP_RATE",
+        "IDEAL_MINIMUM",  # Required for GPT shortage amounts
+        "IDEAL_MAXIMUM",  # Used in excess logic
+        "EOQ",  # Shown in UI for ROP/MinMax sizing
+        "INVENTORY_TURNS",  # Displayed and summarized in UI
+        "LATE_MRP_NEED_QTY",  # Your new field: must normalize
+        "SHORTAGE_AMOUNT",
+        "EXCESS_AMOUNT",
+        "COMBINED_LT",
+        "COMBINED_LT_ACCURATE",
     ]
-    combined_part_detail_df = normalize_numeric_columns(combined_part_detail_df, numeric_cols_combined)
+    combined_part_detail_df = normalize_numeric_columns(
+        combined_part_detail_df, numeric_cols_combined
+    )
 
     st.session_state["combined_part_detail_df"] = combined_part_detail_df
-        
+
     # ------------------------------------
     # ------- UI for Results -----------
     # -----------------------------------
@@ -475,10 +634,15 @@ if uploaded_file:
             what_part_detail_df[
                 [
                     "PART_NUMBER",
-                    "SHORTAGE",
-                    "EXCESS",
+                    "PLANNING_METHOD",
                     "INVENTORY_TURNS",
                     "ON_HAND_QUANTITY",
+                    "IDEAL_MINIMUM",
+                    "LATE_MRP_NEED_QTY",
+                    "SHORTAGE",
+                    "SHORTAGE_AMOUNT",
+                    "EXCESS",
+                    "EXCESS_AMOUNT",
                     "TRAILING_CONSUMPTION",
                     "AVG_DAILY_CONSUMPTION",
                     "SAFETY_STOCK",
@@ -488,15 +652,15 @@ if uploaded_file:
                 ]
             ]
         )
-    
-    # --- UI for WHY Metrics ---
-    st.markdown("🔍 WHY Metrics Results")
+
+        # --- UI for WHY Metrics ---
+        st.markdown("🔍 WHY Metrics Results")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
     col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
     col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
     col4.metric("🛠️ WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
-    col5.metric("🛡️ SS Coverage Accuracy", f"{ss_coverage_percent:.1f}%")
+    col5.metric("📊 Combined LT Accuracy", f"{combined_lt_accuracy:.1f}%")
     col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
 
     with st.expander("📄 Show detailed WHY part-level table"):
@@ -515,6 +679,8 @@ if uploaded_file:
                     "WO_LEAD_TIME_ACCURATE",
                     "AVG_WO_LEAD_TIME",
                     "AVG_PO_LEAD_TIME",
+                    "COMBINED_LT",
+                    "COMBINED_LT_ACCURATE",
                     "AVG_SCRAP_RATE",
                 ]
             ]
@@ -570,6 +736,13 @@ if uploaded_file:
             <= lt_tolerance_pct,
         )
 
+        po_order_df["PLANNING_METHOD"] = po_order_df["PART_ID"].map(
+            part_master_df.set_index("PART_ID")["PLANNING_METHOD"]
+        )
+        wo_order_df["PLANNING_METHOD"] = wo_order_df["PART_ID"].map(
+            part_master_df.set_index("PART_ID")["PLANNING_METHOD"]
+        )
+
         all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
         all_orders_df = all_orders_df.dropna(
             subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"]
@@ -585,6 +758,9 @@ if uploaded_file:
                     "ORDER_TYPE",
                     "ORDER_ID",
                     "PART_ID",
+                    "PART_NUMBER",  # 🆕 for readability
+                    "PLANNING_METHOD",  # 🆕 for MRP/ROP context
+                    "QUANTITY",  # 🆕 key for shortfall analysis
                     "NEED_BY_DATE",
                     "RECEIPT_DATE",
                     "STATUS",
@@ -594,4 +770,298 @@ if uploaded_file:
                     "LT_ACCURACY_FLAG",
                 ]
             ]
-        )          
+        )
+
+
+# -----------------------------
+# ------ GPT Text Blocks ------
+# -----------------------------
+
+# # ---- SHORTAGE ----
+
+# with st.expander("💬 Ask GPT: Shortage Q&A"):
+#     user_prompt = st.text_input("Ask a question about shortages:")
+
+#     if st.button("Ask GPT"):
+#         client = OpenAIClient(
+#             api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+#         )
+
+#         try:
+#             response = client.chat.completions.create(
+#                 model="gpt-4o",
+#                 messages=[
+#                     {
+#                         "role": "system",
+#                         "content": "You are a helpful supply chain assistant that answers questions using available functions.",
+#                     },
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 functions=[shortage_function_spec],
+#                 function_call="auto",
+#                 temperature=0.4,
+#             )
+
+#             choice = response.choices[0]
+#             if choice.finish_reason == "function_call":
+#                 name = choice.message.function_call.name
+#                 args = json.loads(choice.message.function_call.arguments)
+
+#                 if name == "get_material_shortage_summary":
+#                     result = get_material_shortage_summary(**args)
+#                     st.success("GPT called the function and received:")
+#                     st.dataframe(pd.DataFrame(result))
+#             else:
+#                 st.info(choice.message.content)
+
+#         except Exception as e:
+#             st.error(f"Function call failed: {e}")
+
+# # ----- EXCESS -----
+
+# with st.expander("💬 Ask GPT: Excess Q&A"):
+#     user_prompt = st.text_input("Ask a question about excess inventory:")
+
+#     if st.button("Ask GPT (Excess)"):
+#         client = OpenAIClient(
+#             api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+#         )
+
+#         try:
+#             response = client.chat.completions.create(
+#                 model="gpt-4o",
+#                 messages=[
+#                     {
+#                         "role": "system",
+#                         "content": "You are a helpful supply chain assistant that answers questions using available functions.",
+#                     },
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 functions=[excess_function_spec],
+#                 function_call="auto",
+#                 temperature=0.4,
+#             )
+
+#             choice = response.choices[0]
+#             if choice.finish_reason == "function_call":
+#                 name = choice.message.function_call.name
+#                 args = json.loads(choice.message.function_call.arguments)
+
+#                 if name == "get_excess_inventory_summary":
+#                     result = get_excess_inventory_summary(**args)
+#                     st.success("GPT called the function and received:")
+#                     st.dataframe(pd.DataFrame(result))
+#             else:
+#                 st.info(choice.message.content)
+
+#         except Exception as e:
+#             st.error(f"Function call failed: {e}")
+
+# # ------ Inventory Turns -------
+
+# with st.expander("💬 Ask GPT: Inventory Turns Q&A"):
+#     user_prompt = st.text_input("Ask a question about inventory turns:")
+
+#     if st.button("Ask GPT (Turns)"):
+#         client = OpenAIClient(
+#             api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+#         )
+
+#         try:
+#             response = client.chat.completions.create(
+#                 model="gpt-4o",
+#                 messages=[
+#                     {
+#                         "role": "system",
+#                         "content": "You are a helpful supply chain assistant that answers questions using available functions.",
+#                     },
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 functions=[inventory_turns_function_spec],
+#                 function_call="auto",
+#                 temperature=0.4,
+#             )
+
+#             choice = response.choices[0]
+#             if choice.finish_reason == "function_call":
+#                 name = choice.message.function_call.name
+#                 args = json.loads(choice.message.function_call.arguments)
+
+#                 if name == "get_inventory_turns_summary":
+#                     result = get_inventory_turns_summary(**args)
+#                     st.success("GPT called the function and received:")
+#                     st.dataframe(pd.DataFrame(result))
+#             else:
+#                 st.info(choice.message.content)
+
+#         except Exception as e:
+#             st.error(f"Function call failed: {e}")
+
+# # ------ Scrap Rates -------
+
+# with st.expander("💬 Ask GPT: Scrap Rate Q&A"):
+#     user_prompt = st.text_input("Ask a question about scrap rates:")
+
+#     if st.button("Ask GPT (Scrap)"):
+#         client = OpenAIClient(
+#             api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+#         )
+
+#         try:
+#             response = client.chat.completions.create(
+#                 model="gpt-4o",
+#                 messages=[
+#                     {
+#                         "role": "system",
+#                         "content": "You are a helpful supply chain assistant that answers questions using available functions.",
+#                     },
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 functions=[scrap_rate_function_spec],
+#                 function_call="auto",
+#                 temperature=0.4,
+#             )
+
+#             choice = response.choices[0]
+#             if choice.finish_reason == "function_call":
+#                 name = choice.message.function_call.name
+#                 args = json.loads(choice.message.function_call.arguments)
+
+#                 if name == "get_scrap_rate_summary":
+#                     result = get_scrap_rate_summary(**args)
+#                     st.success("GPT called the function and received:")
+#                     st.dataframe(pd.DataFrame(result))
+#             else:
+#                 st.info(choice.message.content)
+
+#         except Exception as e:
+#             st.error(f"Function call failed: {e}")
+
+# # ---------- Lead Time Accuracy --------------
+
+# with st.expander("💬 Ask GPT: Lead Time Accuracy Q&A"):
+#     user_prompt = st.text_input(
+#         "Ask a question about PO, WO, or combined lead time accuracy:"
+#     )
+
+#     if st.button("Ask GPT (Lead Time Accuracy)"):
+#         client = OpenAIClient(
+#             api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+#         )
+
+#         try:
+#             response = client.chat.completions.create(
+#                 model="gpt-4o",
+#                 messages=[
+#                     {
+#                         "role": "system",
+#                         "content": "You are a helpful supply chain assistant that answers questions using available functions.",
+#                     },
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 functions=[lead_time_accuracy_function_spec],
+#                 function_call="auto",
+#                 temperature=0.4,
+#             )
+
+#             choice = response.choices[0]
+#             if choice.finish_reason == "function_call":
+#                 name = choice.message.function_call.name
+#                 args = json.loads(choice.message.function_call.arguments)
+
+#                 if name == "get_lead_time_accuracy_summary":
+#                     result = get_lead_time_accuracy_summary(**args)
+#                     st.success("GPT called the function and received:")
+#                     st.dataframe(pd.DataFrame(result))
+#             else:
+#                 st.info(choice.message.content)
+
+#         except Exception as e:
+#             st.error(f"Function call failed: {e}")
+
+# # ------- Late Orders -----------
+
+# with st.expander("💬 Ask GPT: Late Orders Q&A"):
+#     user_prompt = st.text_input("Ask a question about late purchase or work orders:")
+
+#     if st.button("Ask GPT (Late Orders)"):
+#         client = OpenAIClient(
+#             api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+#         )
+
+#         try:
+#             response = client.chat.completions.create(
+#                 model="gpt-4o",
+#                 messages=[
+#                     {
+#                         "role": "system",
+#                         "content": "You are a helpful supply chain assistant that answers questions using available functions.",
+#                     },
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 functions=[late_orders_function_spec],
+#                 function_call="auto",
+#                 temperature=0.4,
+#             )
+
+#             choice = response.choices[0]
+#             if choice.finish_reason == "function_call":
+#                 name = choice.message.function_call.name
+#                 args = json.loads(choice.message.function_call.arguments)
+
+#                 if name == "get_late_orders_summary":
+#                     result = get_late_orders_summary(**args)
+#                     st.success("GPT called the function and received:")
+#                     st.dataframe(pd.DataFrame(result))
+#             else:
+#                 st.info(choice.message.content)
+
+#         except Exception as e:
+#             st.error(f"Function call failed: {e}")
+
+with st.expander("💬 Ask GPT: Supply & Demand Audit Q&A"):
+    user_prompt = st.text_input(
+        "Ask a question about shortages, excess, lead time, scrap, safety stock, or late orders:"
+    )
+
+    if st.button("Ask GPT (Unified)"):
+        client = OpenAIClient(
+            api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
+        )
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful supply chain audit assistant. Answer questions by choosing the correct function from the list provided. Do not guess. If the user asks something you can't fulfill, politely say it's outside scope.",
+                    },
+                    {"role": "user", "content": user_prompt},
+                ],
+                functions=all_function_specs,
+                function_call="auto",
+                temperature=0.4,
+            )
+
+            choice = response.choices[0]
+
+            if choice.finish_reason == "function_call":
+                name = choice.message.function_call.name
+                args = json.loads(choice.message.function_call.arguments)
+                result = route_gpt_function_call(name, args)
+
+                if isinstance(result, str) and result.startswith("⚠️"):
+                    st.warning(result)
+                else:
+                    st.success(f"✅ GPT called `{name}` and returned:")
+                    st.dataframe(pd.DataFrame(result))
+
+            else:
+                st.warning(
+                    "❌ GPT could not match your question to a supported metric function.\n\n"
+                    "Try asking about shortages, excess inventory, lead time, scrap, safety stock, or late orders."
+                )
+
+        except Exception as e:
+            st.error(f"Function call failed: {e}")
