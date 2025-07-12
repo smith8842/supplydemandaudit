@@ -12,7 +12,17 @@ openai_api_key = st.secrets["OPENAI_API_KEY"]
 
 # ------------ SHORTAGES ---------------
 def get_material_shortage_summary(
-    top_n: int = None, part_number: str = None, planning_method: list[str] | str = None
+    top_n: int = None,
+    part_number: str = None,
+    planning_method: str | list[str] = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    high_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns a filtered list of parts with material shortages.
@@ -77,7 +87,17 @@ def get_material_shortage_summary(
 
 
 def get_excess_inventory_summary(
-    top_n: int = None, part_number: str = None, planning_method: list[str] | str = None
+    top_n: int = None,
+    part_number: str = None,
+    planning_method: str | list[str] = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    high_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns a filtered list of parts with excess inventory.
@@ -133,7 +153,17 @@ def get_excess_inventory_summary(
 
 
 def get_inventory_turns_summary(
-    top_n: int = None, part_number: str = None, planning_method: list[str] | str = None
+    top_n: int = None,
+    part_number: str = None,
+    planning_method: str | list[str] = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    high_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns a filtered list of parts with inventory turns data.
@@ -190,7 +220,15 @@ def get_inventory_turns_summary(
 def get_scrap_rate_summary(
     top_n: int = None,
     part_number: str = None,
-    high_only: bool = False,
+    planning_method: str | list[str] = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    high_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns a filtered list of parts with scrap rate data.
@@ -239,8 +277,15 @@ def get_scrap_rate_summary(
 def get_lead_time_accuracy_summary(
     top_n: int = None,
     part_number: str = None,
+    planning_method: str | list[str] = None,
     order_type: str = None,
     accuracy_filter: str = None,
+    compliant_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns lead time accuracy summary for POs, WOs, or combined.
@@ -332,7 +377,14 @@ def get_lead_time_accuracy_summary(
 def get_ss_accuracy_summary(
     top_n: int = None,
     part_number: str = None,
-    compliant_only: bool = False,
+    planning_method: str | list[str] = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns a list of parts with Safety Stock compliance accuracy.
@@ -385,9 +437,17 @@ def get_ss_accuracy_summary(
 
 def get_late_orders_summary(
     top_n: int = None,
-    order_type: str = None,
     part_number: str = None,
-    late_only: bool = False,
+    order_type: str = None,
+    planning_method: str | list[str] = None,
+    late_only: bool = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
 ):
     """
     GPT-callable: Returns late PO and WO orders from the all_orders_df table.
@@ -466,19 +526,37 @@ def detect_functions_from_prompt(prompt: str):
         f"- {spec['name']}: {spec['description']}" for spec in all_function_specs
     )
 
-    system_prompt = (
-        "You are an intelligent audit assistant. You will receive a list of supply chain audit functions and a user prompt.\n"
-        "Your job is to:\n"
-        "1. Identify which functions are relevant.\n"
-        "2. Determine whether the user is asking for results that match ALL functions (AND/intersection) or ANY function (OR/union).\n"
-        "You MUST return a valid JSON dictionary like this:\n"
-        "{\n"
-        '  "functions": ["get_x", "get_y"],\n'
-        '  "match_type": "intersection"\n'
-        "}\n"
-        "Use 'intersection' if the user seems to expect all conditions to be true (e.g. 'and', 'both').\n"
-        "Use 'union' if the user asks for any of several options (e.g. 'or', 'either')."
-    )
+    system_prompt = """
+    You are an expert assistant helping users analyze supply and demand performance in a manufacturing ERP environment. Your job is to map user questions to one or more function calls from the available audit metrics.
+
+    Each function provides a specific type of supply or demand insight — such as shortages, excess inventory, scrap rates, safety stock accuracy, or lead time issues. Users may ask vague or compound questions. Handle these cases by:
+
+    1. Matching every function that reasonably applies.
+    2. Extracting relevant arguments like part_number, order_type, top_n, or planning_method when mentioned.
+    3. Assuming defaults when needed (e.g. if part_number is not specified, return top rows).
+    4. Supporting logical operators (AND/OR). If the user asks about multiple concerns, match all applicable functions.
+
+    You MUST return a valid JSON dictionary in the following format:
+    {
+    "functions": [
+        {
+        "name": "get_scrap_rate_summary",
+        "arguments": {
+            "top_n": 5,
+            "planning_method": "ROP"
+        }
+        },
+        ...
+    ],
+    "match_type": "intersection"
+    }
+
+    If no functions apply to the user prompt, return:
+    {
+    "functions": [],
+    "match_type": "intersection"
+    }
+    """.strip()
 
     user_prompt = (
         f"Available functions:\n{function_descriptions}\n\n"
@@ -503,9 +581,9 @@ def detect_functions_from_prompt(prompt: str):
 
     try:
         parsed = json.loads(raw)
-        functions = parsed.get("functions", [])
+        function_calls = parsed.get("functions", [])
         match_type = parsed.get("match_type", "intersection").lower()
-        return functions, match_type
+        return function_calls, match_type
     except Exception as e:
         print(f"⚠️ Failed to parse GPT response: {e}")
         return [], "intersection"
@@ -518,22 +596,73 @@ def extract_common_parameters(prompt: str) -> dict:
     prompt = prompt.lower()
     params = {}
 
-    if "top 5" in prompt:
-        params["top_n"] = 5
-    elif "top 10" in prompt:
+    # Top N
+    if "top 10" in prompt:
         params["top_n"] = 10
+    elif "top 5" in prompt:
+        params["top_n"] = 5
     elif "top 3" in prompt:
         params["top_n"] = 3
 
+    # Accuracy filter (best/worst)
     if "worst" in prompt or "lowest" in prompt:
         params["accuracy_filter"] = "inaccurate"
     elif "best" in prompt or "highest" in prompt:
         params["accuracy_filter"] = "accurate"
 
+    # Planning method
+    if "rop" in prompt or "reorder point" in prompt:
+        params["planning_method"] = "ROP"
+    elif "mrp" in prompt:
+        params["planning_method"] = "MRP"
+    elif "min/max" in prompt or "min max" in prompt:
+        params["planning_method"] = "Min/Max"
+
+    # Compliant only
+    if "compliant" in prompt or "accurate" in prompt:
+        params["compliant_only"] = True
+
+    # High only
+    if "high" in prompt or "extreme" in prompt or "above average" in prompt:
+        params["high_only"] = True
+
+    # Late only
+    if "late only" in prompt or "only late" in prompt:
+        params["late_only"] = True
+
+    # Order type
     if "po" in prompt:
         params["order_type"] = "PO"
     elif "wo" in prompt:
         params["order_type"] = "WO"
+
+    # Placeholder fields (safe to add even if unused)
+    if "planner" in prompt:
+        match = re.search(r"planner[^\w]*(\w+)", prompt)
+        if match:
+            params["planner"] = match.group(1)
+
+    if "buyer" in prompt:
+        match = re.search(r"buyer[^\w]*(\w+)", prompt)
+        if match:
+            params["buyer"] = match.group(1)
+
+    if "supplier" in prompt:
+        match = re.search(r"supplier[^\w]*(\w+)", prompt)
+        if match:
+            params["supplier"] = match.group(1)
+
+    if "commodity" in prompt:
+        match = re.search(r"commodity[^\w]*(\w+)", prompt)
+        if match:
+            params["commodity"] = match.group(1)
+
+    if "make" in prompt and "buy" in prompt:
+        params["make_or_buy"] = "Both"
+    elif "make" in prompt:
+        params["make_or_buy"] = "Make"
+    elif "buy" in prompt:
+        params["make_or_buy"] = "Buy"
 
     return params
 
@@ -567,6 +696,11 @@ def route_gpt_function_call(name: str, args: dict):
     sig = inspect.signature(fn)
     accepted_args = {k: v for k, v in args.items() if k in sig.parameters}
 
+    # Universal parameter sanitization (flatten any dict values)
+    for key, val in accepted_args.items():
+        if isinstance(val, dict):
+            accepted_args[key] = next(iter(val.values()), val)
+
     return fn(**accepted_args)
 
 
@@ -576,28 +710,31 @@ def route_gpt_function_call(name: str, args: dict):
 
 import json  # ✅ Needed for function_call args decoding
 
+# ------ UNIVERSAL PROPERTIES LIST ---------
+
+# Shared universal properties for all GPT function specs
+universal_properties = {
+    "top_n": {"type": "integer"},
+    "part_number": {"type": "string"},
+    "planning_method": {"type": "string"},
+    "accuracy_filter": {"type": "string"},
+    "compliant_only": {"type": "boolean"},
+    "high_only": {"type": "boolean"},
+    "planner": {"type": "string"},
+    "buyer": {"type": "string"},
+    "supplier": {"type": "string"},
+    "make_or_buy": {"type": "string"},
+    "commodity": {"type": "string"},
+}
+
 # ------SHORTAGE CALL --------
 shortage_function_spec = {
     "name": "get_material_shortage_summary",
-    "description": "Returns a filtered list of parts with material shortages.",
+    "description": "Returns a filtered list of parts with material shortages. Higher values indicate worse performance.",
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Number of shortage rows (excluding headers) to return to the user.",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional: filter by specific part number",
-            },
-            "planning_method": {
-                "anyOf": [
-                    {"type": "string"},
-                    {"type": "array", "items": {"type": "string"}},
-                ],
-                "description": "Restrict to planning method(s), e.g. 'MRP', 'ROP', or ['ROP', 'MRP']",
-            },
+            **universal_properties,
         },
         "required": [],
     },
@@ -612,21 +749,7 @@ excess_function_spec = {
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Number of excess rows (excluding headers) to return to the user.",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional: filter by specific part number",
-            },
-            "planning_method": {
-                "anyOf": [
-                    {"type": "string"},
-                    {"type": "array", "items": {"type": "string"}},
-                ],
-                "description": "Restrict to planning method(s), e.g. 'MRP', 'ROP', or ['ROP', 'MRP']",
-            },
+            **universal_properties,
         },
         "required": [],
     },
@@ -640,21 +763,7 @@ inventory_turns_function_spec = {
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Max number of results to return, sorted by lowest inventory turns.",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional: filter by specific part number.",
-            },
-            "planning_method": {
-                "anyOf": [
-                    {"type": "string"},
-                    {"type": "array", "items": {"type": "string"}},
-                ],
-                "description": "Restrict to planning method(s), e.g. 'MRP', 'ROP', or ['ROP', 'MRP']",
-            },
+            **universal_properties,
         },
         "required": [],
     },
@@ -667,18 +776,7 @@ scrap_rate_function_spec = {
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Max number of results to return, sorted by highest scrap rate.",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional: filter by specific part number.",
-            },
-            "high_only": {
-                "type": "boolean",
-                "description": "If true, only return parts with high scrap rates (above threshold).",
-            },
+            **universal_properties,
         },
         "required": [],
     },
@@ -692,23 +790,11 @@ lead_time_accuracy_function_spec = {
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Max number of results to return.",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional: filter by part number.",
-            },
+            **universal_properties,
             "order_type": {
                 "type": "string",
                 "enum": ["PO", "WO", "Combined"],
                 "description": "Choose order type: 'PO', 'WO', or 'Combined'.",
-            },
-            "accuracy_filter": {
-                "type": "string",
-                "enum": ["accurate", "inaccurate"],
-                "description": "Filter to only 'accurate' or 'inaccurate' parts (optional).",
             },
         },
         "required": [],
@@ -723,18 +809,7 @@ ss_accuracy_function_spec = {
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Max number of results to return, sorted by greatest deviation.",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional: filter by specific part number.",
-            },
-            "compliant_only": {
-                "type": "boolean",
-                "description": "If true, only return parts where SS is within acceptable tolerance.",
-            },
+            **universal_properties,
         },
         "required": [],
     },
@@ -748,18 +823,11 @@ late_orders_function_spec = {
     "parameters": {
         "type": "object",
         "properties": {
-            "top_n": {
-                "type": "integer",
-                "description": "Max number of late orders to return.",
-            },
+            **universal_properties,
             "order_type": {
                 "type": "string",
                 "enum": ["PO", "WO"],
                 "description": "Filter by order type (PO or WO).",
-            },
-            "part_number": {
-                "type": "string",
-                "description": "Optional filter by part number.",
             },
             "late_only": {
                 "type": "boolean",

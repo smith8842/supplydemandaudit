@@ -806,15 +806,18 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                 )
             else:
                 pretty_names = [
-                    friendly_name_map.get(name, name) for name in function_names
+                    friendly_name_map.get(fn.get("name"), fn.get("name"))
+                    for fn in function_names
                 ]
+
                 st.success(f"✅ GPT matched: {', '.join(pretty_names)}")
                 st.info(f"🔗 Merge logic: {match_type.upper()} (based on your prompt)")
 
                 results = []
-                for fn_name in function_names:
-                    params = extract_common_parameters(user_prompt)
-                    result = route_gpt_function_call(fn_name, params)
+                for fn in function_names:
+                    fn_name = fn.get("name")
+                    fn_args = fn.get("arguments", {})
+                    result = route_gpt_function_call(fn_name, fn_args)
 
                     if isinstance(result, list):
                         df = pd.DataFrame(result)
