@@ -19,7 +19,9 @@ from gpt_functions import (
     get_late_orders_summary,
     route_gpt_function_call,
     detect_functions_from_prompt,
-    extract_common_parameters,
+    # extract_common_parameters,
+    apply_universal_filters,
+    smart_filter_rank_summary,
     shortage_function_spec,
     excess_function_spec,
     inventory_turns_function_spec,
@@ -27,6 +29,7 @@ from gpt_functions import (
     lead_time_accuracy_function_spec,
     ss_accuracy_function_spec,
     late_orders_function_spec,
+    smart_filter_rank_function_spec,
     all_function_specs,
 )
 
@@ -38,7 +41,7 @@ openai_api_key = st.secrets["OPENAI_API_KEY"]
 def normalize_numeric_columns(df, cols):
     for col in cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce")  # No fillna!
     return df
 
 
@@ -143,8 +146,8 @@ if uploaded_file:
             "IDEAL_MAXIMUM",
             "EOQ",
             "INVENTORY_TURNS",
-            "SHORTAGE_AMOUNT",
-            "EXCESS_AMOUNT",
+            "SHORTAGE_QTY",
+            "EXCESS_QTY",
         ]
         what_df = normalize_numeric_columns(what_df, numeric_cols_what)
 
@@ -212,12 +215,14 @@ if uploaded_file:
             what_df.index.isin(ropmm_parts["PART_ID"])
             & (what_df["ON_HAND_QUANTITY"] > what_df["IDEAL_MAXIMUM"])
         ].index
-        what_df.loc[ropmm_excess_parts, "EXCESS"] = True
+        what_df.loc[ropmm_excess_parts, "EXCESS_YN"] = True
 
-        # Inventory turns
-        what_df["INVENTORY_TURNS"] = what_df["TRAILING_CONSUMPTION"] / (
-            what_df["ON_HAND_QUANTITY"] + 1
+        what_df["INVENTORY_TURNS"] = np.where(
+            what_df["ON_HAND_QUANTITY"] > 0,
+            what_df["TRAILING_CONSUMPTION"] / what_df["ON_HAND_QUANTITY"],
+            np.nan,
         )
+
         avg_turns = what_df["INVENTORY_TURNS"].mean()
 
         # --- Create new field: LATE_MRP_NEED_QUANTITY ---
@@ -255,7 +260,7 @@ if uploaded_file:
             what_df.index.to_series().map(late_total).fillna(0).round(2)
         )
 
-        # --- Unified SHORTAGE_AMOUNT calculation (after late MRP need is computed) ---
+        # --- Unified SHORTAGE_QTY calculation (after late MRP need is computed) ---
         def compute_shortage_amount(row):
             if row["PLANNING_METHOD"] == "MRP":
                 return max(
@@ -267,10 +272,10 @@ if uploaded_file:
                 return 0
 
         # --- Defines a Shortage T/F based on Shortage amount
-        what_df["SHORTAGE_AMOUNT"] = what_df.apply(compute_shortage_amount, axis=1)
-        what_df["SHORTAGE"] = what_df["SHORTAGE_AMOUNT"] > 0
+        what_df["SHORTAGE_QTY"] = what_df.apply(compute_shortage_amount, axis=1)
+        what_df["SHORTAGE_YN"] = what_df["SHORTAGE_QTY"] > 0
 
-        # --- Unified EXCESS_AMOUNT calculation ---
+        # --- Unified EXCESS_QTY calculation ---
         def compute_excess_amount(row):
             if row["PLANNING_METHOD"] == "MRP":
                 return max(
@@ -281,12 +286,12 @@ if uploaded_file:
             else:
                 return 0
 
-        what_df["EXCESS_AMOUNT"] = what_df.apply(compute_excess_amount, axis=1)
-        what_df["EXCESS"] = what_df["EXCESS_AMOUNT"] > 0
+        what_df["EXCESS_QTY"] = what_df.apply(compute_excess_amount, axis=1)
+        what_df["EXCESS_YN"] = what_df["EXCESS_QTY"] > 0
 
         # Calculate final summary metrics
-        shortage_pct = (what_df["SHORTAGE"].sum() / len(what_df)) * 100
-        excess_pct = (what_df["EXCESS"].sum() / len(what_df)) * 100
+        shortage_pct = (what_df["SHORTAGE_YN"].sum() / len(what_df)) * 100
+        excess_pct = (what_df["EXCESS_YN"].sum() / len(what_df)) * 100
 
         return what_df, shortage_pct, excess_pct, avg_turns
 
@@ -295,111 +300,123 @@ if uploaded_file:
     @st.cache_data
     def calculate_why_metrics(part_master_df, consumption_df, po_df, wo_df):
 
-        # PO metrics
-        po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
-        po_df["NEED_BY_DATE"] = pd.to_datetime(po_df["NEED_BY_DATE"])
-        po_df["LT_DAYS"] = (po_df["RECEIPT_DATE"] - po_df["NEED_BY_DATE"]).dt.days
+        # ✅ Only include closed orders from the start
+        closed_po = po_df[po_df["STATUS"].str.lower() == "closed"].copy()
+        closed_wo = wo_df[wo_df["STATUS"].str.lower() == "closed"].copy()
 
-        total_pos = len(po_df)
-        late_pos_count = len(
-            po_df[
-                (po_df["STATUS"].str.lower() == "open")
-                & (po_df["RECEIPT_DATE"] > po_df["NEED_BY_DATE"])
-            ]
-        )
-        po_late_percent = (late_pos_count / total_pos) * 100 if total_pos > 0 else 0
+        # Convert relevant dates
+        closed_po["RECEIPT_DATE"] = pd.to_datetime(closed_po["RECEIPT_DATE"])
+        closed_po["NEED_BY_DATE"] = pd.to_datetime(closed_po["NEED_BY_DATE"])
+        closed_po["START_DATE"] = pd.to_datetime(closed_po["START_DATE"])
+        closed_wo["COMPLETION_DATE"] = pd.to_datetime(closed_wo["COMPLETION_DATE"])
+        closed_wo["DUE_DATE"] = pd.to_datetime(closed_wo["DUE_DATE"])
+        closed_wo["START_DATE"] = pd.to_datetime(closed_wo["START_DATE"])
 
-        closed_po = po_df[po_df["STATUS"].str.lower() == "closed"]
-        lt_accuracy_po = (
-            closed_po.groupby("PART_ID").agg(actual_lt=("LT_DAYS", "mean")).dropna()
-        )
-        lt_accuracy_po = lt_accuracy_po.join(
-            part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt")
-        ).dropna()
-        lt_accuracy_po["WITHIN_TOLERANCE"] = (
-            abs(lt_accuracy_po["actual_lt"] - lt_accuracy_po["erp_lt"])
-            / lt_accuracy_po["erp_lt"]
-        ) <= lt_tolerance_pct
-        po_lead_time_accuracy = (
-            lt_accuracy_po["WITHIN_TOLERANCE"].mean() * 100
-            if not lt_accuracy_po.empty
-            else 0
-        )
+        # Step 1–2: Actual Lead Time and Days Late
+        closed_po["ACTUAL_LT_DAYS"] = (
+            closed_po["RECEIPT_DATE"] - closed_po["START_DATE"]
+        ).dt.days
+        closed_wo["ACTUAL_LT_DAYS"] = (
+            closed_wo["COMPLETION_DATE"] - closed_wo["START_DATE"]
+        ).dt.days
 
-        # WO metrics
-        wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
-        wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
-        wo_df["WO_LT_DAYS"] = (wo_df["COMPLETION_DATE"] - wo_df["DUE_DATE"]).dt.days
-
-        total_wos = len(wo_df)
-        late_wo_count = len(
-            wo_df[
-                (wo_df["STATUS"].str.lower() == "open")
-                & (wo_df["COMPLETION_DATE"] > wo_df["DUE_DATE"])
-            ]
+        # Step 3: Avg PO/WO/Combined LT
+        avg_po_lt = (
+            closed_po.groupby("PART_ID")["ACTUAL_LT_DAYS"]
+            .mean()
+            .rename("AVG_PO_LEAD_TIME")
         )
-        wo_late_percent = (late_wo_count / total_wos) * 100 if total_wos > 0 else 0
-
-        closed_wo = wo_df[wo_df["STATUS"].str.lower() == "closed"]
-        lt_accuracy_wo = (
-            closed_wo.groupby("PART_ID").agg(actual_lt=("WO_LT_DAYS", "mean")).dropna()
-        )
-        lt_accuracy_wo = lt_accuracy_wo.join(
-            part_master_df.set_index("PART_ID")["LEAD_TIME"].rename("erp_lt")
-        ).dropna()
-        lt_accuracy_wo["WITHIN_TOLERANCE"] = (
-            abs(lt_accuracy_wo["actual_lt"] - lt_accuracy_wo["erp_lt"])
-            / lt_accuracy_wo["erp_lt"]
-        ) <= lt_tolerance_pct
-        wo_lead_time_accuracy = (
-            lt_accuracy_wo["WITHIN_TOLERANCE"].mean() * 100
-            if not lt_accuracy_wo.empty
-            else 0
+        avg_wo_lt = (
+            closed_wo.groupby("PART_ID")["ACTUAL_LT_DAYS"]
+            .mean()
+            .rename("AVG_WO_LEAD_TIME")
         )
 
-        # --- Combined PO + WO Lead Time Accuracy (weighted by volume) ---
-        # Count of closed orders
-        po_counts = closed_po.groupby("PART_ID").size().rename("PO_COUNT")
-        wo_counts = closed_wo.groupby("PART_ID").size().rename("WO_COUNT")
-
-        # Combine counts
-        lt_counts = pd.concat([po_counts, wo_counts], axis=1).fillna(0)
+        lt_counts = pd.concat(
+            [
+                closed_po.groupby("PART_ID").size().rename("PO_COUNT"),
+                closed_wo.groupby("PART_ID").size().rename("WO_COUNT"),
+            ],
+            axis=1,
+        ).fillna(0)
         lt_counts["TOTAL_COUNT"] = lt_counts["PO_COUNT"] + lt_counts["WO_COUNT"]
 
-        # Merge average LTs from previous calculations
         combined_lt_df = pd.DataFrame(index=part_master_df["PART_ID"])
         combined_lt_df["ERP_LEAD_TIME"] = part_master_df.set_index("PART_ID")[
             "LEAD_TIME"
         ]
-        combined_lt_df["AVG_PO_LEAD_TIME"] = lt_accuracy_po["actual_lt"]
-        combined_lt_df["AVG_WO_LEAD_TIME"] = lt_accuracy_wo["actual_lt"]
-        combined_lt_df = combined_lt_df.join(lt_counts)
+        combined_lt_df = combined_lt_df.join(avg_po_lt).join(avg_wo_lt).join(lt_counts)
 
-        # Compute weighted average lead time
         combined_lt_df["COMBINED_LT"] = (
-            (combined_lt_df["AVG_PO_LEAD_TIME"] * combined_lt_df["PO_COUNT"].fillna(0))
-            + (
-                combined_lt_df["AVG_WO_LEAD_TIME"]
-                * combined_lt_df["WO_COUNT"].fillna(0)
-            )
-        ) / combined_lt_df["TOTAL_COUNT"]
+            (combined_lt_df["AVG_PO_LEAD_TIME"] * combined_lt_df["PO_COUNT"])
+            + (combined_lt_df["AVG_WO_LEAD_TIME"] * combined_lt_df["WO_COUNT"])
+        ) / combined_lt_df["TOTAL_COUNT"].replace(0, np.nan)
 
-        combined_lt_df["COMBINED_LT_ACCURATE"] = (
-            abs(combined_lt_df["COMBINED_LT"] - combined_lt_df["ERP_LEAD_TIME"])
-            / combined_lt_df["ERP_LEAD_TIME"]
-        ) <= lt_tolerance_pct
-
-        combined_lt_accuracy = (
-            combined_lt_df["COMBINED_LT_ACCURATE"].mean() * 100
-            if "COMBINED_LT_ACCURATE" in combined_lt_df.columns
-            else 0
+        # Step 4: Accuracy % vs ERP
+        combined_lt_df["PO_LT_ACCURACY_PCT"] = np.where(
+            combined_lt_df["AVG_PO_LEAD_TIME"].notna(),
+            (
+                1
+                - abs(
+                    combined_lt_df["AVG_PO_LEAD_TIME"] - combined_lt_df["ERP_LEAD_TIME"]
+                )
+                / combined_lt_df["ERP_LEAD_TIME"]
+            ),
+            np.nan,
         )
 
-        # Accuracy flag
+        combined_lt_df["WO_LT_ACCURACY_PCT"] = np.where(
+            combined_lt_df["AVG_WO_LEAD_TIME"].notna(),
+            (
+                1
+                - abs(
+                    combined_lt_df["AVG_WO_LEAD_TIME"] - combined_lt_df["ERP_LEAD_TIME"]
+                )
+                / combined_lt_df["ERP_LEAD_TIME"]
+            ),
+            np.nan,
+        )
+
+        combined_lt_df["COMBINED_LT_ACCURACY_PCT"] = np.where(
+            combined_lt_df["COMBINED_LT"].notna(),
+            (
+                1
+                - abs(combined_lt_df["COMBINED_LT"] - combined_lt_df["ERP_LEAD_TIME"])
+                / combined_lt_df["ERP_LEAD_TIME"]
+            ),
+            np.nan,
+        )
+
+        # Step 5: Accuracy Flags
+        combined_lt_df["PO_LEAD_TIME_ACCURATE"] = (
+            combined_lt_df["PO_LT_ACCURACY_PCT"] >= 1 - lt_tolerance_pct
+        ).mask(combined_lt_df["PO_LT_ACCURACY_PCT"].isna())
+
+        combined_lt_df["WO_LEAD_TIME_ACCURATE"] = (
+            combined_lt_df["WO_LT_ACCURACY_PCT"] >= 1 - lt_tolerance_pct
+        ).mask(combined_lt_df["WO_LT_ACCURACY_PCT"].isna())
+
         combined_lt_df["COMBINED_LT_ACCURATE"] = (
-            abs(combined_lt_df["COMBINED_LT"] - combined_lt_df["ERP_LEAD_TIME"])
-            / combined_lt_df["ERP_LEAD_TIME"]
-        ) <= lt_tolerance_pct
+            combined_lt_df["COMBINED_LT_ACCURACY_PCT"] >= 1 - lt_tolerance_pct
+        ).mask(combined_lt_df["COMBINED_LT_ACCURACY_PCT"].isna())
+
+        # Step 6: Push part-level metrics to WHY table
+        why_df = part_master_df.copy().set_index("PART_ID")
+        why_df = why_df.join(
+            combined_lt_df[
+                [
+                    "AVG_PO_LEAD_TIME",
+                    "AVG_WO_LEAD_TIME",
+                    "COMBINED_LT",
+                    "PO_LT_ACCURACY_PCT",
+                    "WO_LT_ACCURACY_PCT",
+                    "COMBINED_LT_ACCURACY_PCT",
+                    "PO_LEAD_TIME_ACCURATE",
+                    "WO_LEAD_TIME_ACCURATE",
+                    "COMBINED_LT_ACCURATE",
+                ]
+            ]
+        )
 
         # Safety stock accuracy
         recent_cutoff = pd.Timestamp.today() - pd.Timedelta(days=trailing_days)
@@ -421,16 +438,16 @@ if uploaded_file:
         ss_df["IDEAL_SS"] = (
             z_score * ss_df["STD_DEV_CONSUMPTION"] * np.sqrt(ss_df["LEAD_TIME"])
         )
-        ss_df = ss_df[~ss_df["IDEAL_SS"].isnull()]
-        ss_df["WITHIN_TOLERANCE"] = (
-            abs(ss_df["SAFETY_STOCK"] - ss_df["IDEAL_SS"]) / ss_df["IDEAL_SS"]
-            <= ss_tolerance_pct
-        )
-        valid_ss_parts = len(ss_df["WITHIN_TOLERANCE"])
+        ss_df["SS_DEVIATION_QTY"] = ss_df["SAFETY_STOCK"] - ss_df["IDEAL_SS"]
+        ss_df["SS_DEVIATION_PCT"] = ss_df["SS_DEVIATION_QTY"] / ss_df["IDEAL_SS"]
+        ss_df["WITHIN_TOLERANCE"] = abs(ss_df["SS_DEVIATION_PCT"]) <= ss_tolerance_pct
+
+        valid_ss_parts = ss_df["IDEAL_SS"].notnull().sum()
         compliant_parts = ss_df["WITHIN_TOLERANCE"].sum()
-        ss_coverage_percent = (
+        ss_accuracy_percent = (
             (compliant_parts / valid_ss_parts * 100) if valid_ss_parts > 0 else 0
         )
+
         # Scrap rates
         scrap_transactions = consumption_df[
             consumption_df["TRANSACTION_TYPE"] == scrap_transaction_type
@@ -446,40 +463,46 @@ if uploaded_file:
         scrap_rate_by_part = total_scrap_by_part / (
             total_scrap_by_part + total_consumed_by_part
         )
-        scrap_rate_by_part = scrap_rate_by_part.fillna(0)
+        total_scrap_denominator = (total_scrap_by_part + total_consumed_by_part).rename(
+            "SCRAP_DENOMINATOR"
+        )
+        scrap_rate_by_part = scrap_rate_by_part.replace([np.inf, -np.inf], np.nan)
 
         scrap_rate_df = scrap_rate_by_part.rename("AVG_SCRAP_RATE").to_frame()
+        scrap_rate_df = scrap_rate_df.join(total_scrap_denominator)
+        scrap_rate_df["HIGH_SCRAP_PART"] = (
+            scrap_rate_df["AVG_SCRAP_RATE"] > high_scrap_threshold
+        )
+
         valid_scrap_parts = scrap_rate_by_part.count()
         high_scrap_parts = (scrap_rate_by_part > high_scrap_threshold).sum()
         high_scrap_percent = (
             (high_scrap_parts / valid_scrap_parts * 100) if valid_scrap_parts > 0 else 0
         )
+
         # Final part-level WHY detail DataFrame
         why_df = part_master_df.copy().set_index("PART_ID")
         why_df = why_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
         why_df = why_df.join(
-            ss_df[["IDEAL_SS", "WITHIN_TOLERANCE"]].rename(
-                columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"}
-            )
+            ss_df[
+                ["IDEAL_SS", "SS_DEVIATION_QTY", "SS_DEVIATION_PCT", "WITHIN_TOLERANCE"]
+            ].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"})
         )
         why_df = why_df.join(
-            lt_accuracy_po[["actual_lt", "WITHIN_TOLERANCE"]].rename(
-                columns={
-                    "actual_lt": "AVG_PO_LEAD_TIME",
-                    "WITHIN_TOLERANCE": "PO_LEAD_TIME_ACCURATE",
-                }
-            )
+            combined_lt_df[
+                [
+                    "AVG_PO_LEAD_TIME",
+                    "AVG_WO_LEAD_TIME",
+                    "COMBINED_LT",
+                    "PO_LT_ACCURACY_PCT",
+                    "WO_LT_ACCURACY_PCT",
+                    "COMBINED_LT_ACCURACY_PCT",
+                    "PO_LEAD_TIME_ACCURATE",
+                    "WO_LEAD_TIME_ACCURATE",
+                    "COMBINED_LT_ACCURATE",
+                ]
+            ]
         )
-        why_df = why_df.join(
-            lt_accuracy_wo[["actual_lt", "WITHIN_TOLERANCE"]].rename(
-                columns={
-                    "actual_lt": "AVG_WO_LEAD_TIME",
-                    "WITHIN_TOLERANCE": "WO_LEAD_TIME_ACCURATE",
-                }
-            )
-        )
-        # Add combined LT accuracy to why_df
-        why_df = why_df.join(combined_lt_df[["COMBINED_LT", "COMBINED_LT_ACCURATE"]])
 
         scrap_rate_df.index = scrap_rate_df.index.astype(why_df.index.dtype)
         why_df = why_df.join(scrap_rate_df)
@@ -489,31 +512,120 @@ if uploaded_file:
             "SAFETY_STOCK",
             "AVG_DAILY_CONSUMPTION",
             "IDEAL_SS",
+            "SS_DEVIATION_QTY",  # 🆕
+            "SS_DEVIATION_PCT",
             "AVG_PO_LEAD_TIME",
             "AVG_WO_LEAD_TIME",
             "AVG_SCRAP_RATE",
             "COMBINED_LT",
+            "COMBINED_LT_ACCURACY_PCT",
+            "PO_LT_ACCURACY_PCT",
+            "WO_LT_ACCURACY_PCT",
         ]
         why_df = normalize_numeric_columns(why_df, numeric_cols_why)
 
-        return (
-            why_df,
-            po_late_percent,
-            wo_late_percent,
-            po_lead_time_accuracy,
-            wo_lead_time_accuracy,
-            combined_lt_accuracy,
-            ss_coverage_percent,
-            high_scrap_percent,
+        return why_df
+
+    def build_all_orders_df(part_master_df, po_df, wo_df):
+        # ✅ Only include closed orders from the start
+        po_df = po_df.copy()
+        wo_df = wo_df.copy()
+
+        # Convert relevant dates
+        po_df["RECEIPT_DATE"] = pd.to_datetime(po_df["RECEIPT_DATE"])
+        po_df["NEED_BY_DATE"] = pd.to_datetime(po_df["NEED_BY_DATE"])
+        po_df["START_DATE"] = pd.to_datetime(po_df["START_DATE"])
+
+        wo_df["COMPLETION_DATE"] = pd.to_datetime(wo_df["COMPLETION_DATE"])
+        wo_df["DUE_DATE"] = pd.to_datetime(wo_df["DUE_DATE"])
+        wo_df["START_DATE"] = pd.to_datetime(wo_df["START_DATE"])
+
+        # Actual lead time in days
+        po_df["ACTUAL_LT_DAYS"] = np.where(
+            po_df["STATUS"].str.lower() == "closed",
+            (po_df["RECEIPT_DATE"] - po_df["START_DATE"]).dt.days,
+            np.nan,
         )
+        wo_df["ACTUAL_LT_DAYS"] = np.where(
+            wo_df["STATUS"].str.lower() == "closed",
+            (wo_df["COMPLETION_DATE"] - wo_df["START_DATE"]).dt.days,
+            np.nan,
+        )
+
+        # Days late
+        po_df["DAYS_LATE"] = np.where(
+            po_df["STATUS"].str.lower() == "closed",
+            (po_df["RECEIPT_DATE"] - po_df["NEED_BY_DATE"]).dt.days,
+            np.nan,
+        )
+        wo_df["DAYS_LATE"] = np.where(
+            wo_df["STATUS"].str.lower() == "closed",
+            (wo_df["COMPLETION_DATE"] - wo_df["DUE_DATE"]).dt.days,
+            np.nan,
+        )
+
+        # Late flag
+        po_df["IS_LATE"] = po_df["DAYS_LATE"] > 0
+        wo_df["IS_LATE"] = wo_df["DAYS_LATE"] > 0
+
+        # % late relative to actual lead time
+        po_df["PCT_LATE"] = (
+            po_df["DAYS_LATE"] / po_df["ACTUAL_LT_DAYS"].replace(0, np.nan)
+        ).clip(lower=0)
+        wo_df["PCT_LATE"] = (
+            wo_df["DAYS_LATE"] / wo_df["ACTUAL_LT_DAYS"].replace(0, np.nan)
+        ).clip(lower=0)
+
+        # Standardize order fields
+        po_df["ORDER_ID"] = po_df["PO_LINE_ID"]
+        po_df["ORDER_TYPE"] = "PO"
+        po_df["NEED_BY_DATE"] = po_df["NEED_BY_DATE"]
+        po_df["RECEIPT_DATE"] = po_df["RECEIPT_DATE"]
+
+        wo_df["ORDER_ID"] = wo_df["WO_ID"]
+        wo_df["ORDER_TYPE"] = "WO"
+        wo_df["NEED_BY_DATE"] = wo_df["DUE_DATE"]
+        wo_df["RECEIPT_DATE"] = wo_df["COMPLETION_DATE"]
+
+        # Add PLANNING_METHOD from part master
+        po_df["PLANNING_METHOD"] = po_df["PART_ID"].map(
+            part_master_df.set_index("PART_ID")["PLANNING_METHOD"]
+        )
+        wo_df["PLANNING_METHOD"] = wo_df["PART_ID"].map(
+            part_master_df.set_index("PART_ID")["PLANNING_METHOD"]
+        )
+        # ERP Lead Time from Part master
+        po_df["ERP_LEAD_TIME"] = po_df["PART_ID"].map(
+            part_master_df.set_index("PART_ID")["LEAD_TIME"]
+        )
+        wo_df["ERP_LEAD_TIME"] = wo_df["PART_ID"].map(
+            part_master_df.set_index("PART_ID")["LEAD_TIME"]
+        )
+
+        # Merge PO + WO
+        all_orders_df = pd.concat([po_df, wo_df], ignore_index=True)
+        all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
+        all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
+
+        numeric_cols_orders = ["ACTUAL_LT_DAYS", "DAYS_LATE", "PCT_LATE"]
+        all_orders_df = normalize_numeric_columns(all_orders_df, numeric_cols_orders)
+
+        # Save to session state
+        st.session_state["all_orders_df"] = all_orders_df.copy()
+
+        return all_orders_df
 
     # --- Combine WHAT and WHY part-level data ---
 
     @st.cache_data
     def build_combined_part_df(what_df, why_df):
         combined_df = what_df.set_index("PART_ID").join(
-            why_df, how="outer", rsuffix="_why"
+            why_df.drop(
+                columns=what_df.columns.intersection(why_df.columns), errors="ignore"
+            ),
+            how="outer",
         )
+
         combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
         return combined_df.reset_index()
 
@@ -530,14 +642,16 @@ if uploaded_file:
             "ON_HAND_QUANTITY": "Current total inventory on hand",
             "TRAILING_CONSUMPTION": "Total consumption over a defined past period of time",
             "AVG_DAILY_CONSUMPTION": "Average daily consumption over a defined past period of time",
-            "SHORTAGE": "Flag indicating if the part is in material shortage per MRP",
-            "EXCESS": "Flag indicating if the part has excess inventory over needed demand",
+            "SHORTAGE_YN": "Flag indicating if the part is in material shortage per MRP",
+            "EXCESS_YN": "Flag indicating if the part has excess inventory over needed demand",
             "INVENTORY_TURNS": "How often current inventory turns over, or gets consumed, based on trailing consumption",
             "IDEAL_MINIMUM": "Recommended minimum inventory based on consumption, lead time and statistical calculation",
             "IDEAL_MAXIMUM": "Recommended maximum inventory based on consumption, lead time and statistical calculation",
             "HAS_MRP_WITHIN_LT": "Indicates whether MRP has generated a suggested planned order within the part’s lead time",
             "IDEAL_SS": "Recommended ideal safety stock based on consumption, lead time and statistical calculation",
             "SS_COMPLIANT_PART": "Whether ERP safety stock is within defined buffer % of the ideal value",
+            "SS_DEVIATION_QTY": "The quantity difference between ERP safety stock and the statistically recommended ideal safety stock.",
+            "SS_DEVIATION_PCT": "The percent deviation between ERP safety stock and ideal safety stock. Used to flag accuracy.",
             "AVG_PO_LEAD_TIME": "Average actual lead time for closed purchase orders",
             "PO_LEAD_TIME_ACCURATE": "Flag if PO lead time is within defined buffer % of ERP value",
             "AVG_WO_LEAD_TIME": "Average actual lead time for closed work orders",
@@ -565,8 +679,18 @@ if uploaded_file:
             "valid_consumption_types": "Transaction types counted as valid consumption when calculating scrap",
             "scrap_transaction_type": "Transaction type used to identify scrap in WIP transactions",
             "LATE_MRP_NEED_QTY": "Total quantity of demand covered by late POs, late WOs, or MRP suggestions within lead time. Represents unfulfilled or misaligned supply.",
-            "SHORTAGE_AMOUNT": "The numeric quantity by which a part is short, based on its planning method. For ROP/Min/Max parts, this is Ideal Min - On Hand. For MRP parts, this is Late MRP Need - On Hand.",
-            "EXCESS_AMOUNT": "The numeric quantity of excess inventory. For ROP/MinMax, it's On Hand - Ideal Max. For MRP, it's On Hand - Late MRP Need.",
+            "SHORTAGE_QTY": "The numeric quantity by which a part is short, based on its planning method. For ROP/Min/Max parts, this is Ideal Min - On Hand. For MRP parts, this is Late MRP Need - On Hand.",
+            "EXCESS_QTY": "The numeric quantity of excess inventory. For ROP/MinMax, it's On Hand - Ideal Max. For MRP, it's On Hand - Late MRP Need.",
+            "EOQ": "The statistically calculated Economic Order Quantity for the part, based on trailing consumption, ordering cost, and holding cost.",
+            "INVENTORY_TURNS": "Measures how quickly inventory is consumed, calculated as trailing consumption divided by on-hand inventory.",
+            "STD_DEV_CONSUMPTION": "Standard deviation of daily consumption used in ideal SS calculation.",
+            "PO_LT_ACCURACY_PCT": "Percent deviation between average actual PO lead time and ERP lead time.",
+            "WO_LT_ACCURACY_PCT": "Percent deviation between average actual WO lead time and ERP lead time.",
+            "COMBINED_LT": "Weighted average lead time across PO and WO orders, weighted by order volume.",
+            "COMBINED_LT_ACCURATE": "Flag indicating if the combined LT is within the allowed tolerance of ERP LT.",
+            "COMBINED_LT_ACCURACY_PCT": "Percent deviation between combined LT and ERP LT.",
+            "HIGH_SCRAP_PART": "Flag indicating whether the part's scrap rate exceeds the defined high scrap threshold.",
+            "SCRAP_DENOMINATOR": "Total quantity used in the scrap rate denominator (scrap + valid consumption).",
         }
 
     # Cache dictionary for AI agent access
@@ -578,16 +702,13 @@ if uploaded_file:
             part_master_df, inventory_df, consumption_df, mrp_df, po_df, wo_df
         )
     )
-    (
-        why_part_detail_df,
-        po_late_percent,
-        wo_late_percent,
-        po_lead_time_accuracy,
-        wo_lead_time_accuracy,
-        combined_lt_accuracy,
-        ss_coverage_percent,
-        high_scrap_percent,
-    ) = calculate_why_metrics(part_master_df, consumption_df, po_df, wo_df)
+
+    why_part_detail_df = calculate_why_metrics(
+        part_master_df, consumption_df, po_df, wo_df
+    )
+
+    all_orders_df = build_all_orders_df(part_master_df, po_df, wo_df)
+
     combined_part_detail_df = build_combined_part_df(
         what_part_detail_df, why_part_detail_df
     )
@@ -608,10 +729,11 @@ if uploaded_file:
         "EOQ",  # Shown in UI for ROP/MinMax sizing
         "INVENTORY_TURNS",  # Displayed and summarized in UI
         "LATE_MRP_NEED_QTY",  # Your new field: must normalize
-        "SHORTAGE_AMOUNT",
-        "EXCESS_AMOUNT",
+        "SHORTAGE_QTY",
+        "EXCESS_QTY",
         "COMBINED_LT",
-        "COMBINED_LT_ACCURATE",
+        "PO_LT_ACCURACY_PCT",
+        "WO_LT_ACCURACY_PCT",
     ]
     combined_part_detail_df = normalize_numeric_columns(
         combined_part_detail_df, numeric_cols_combined
@@ -641,10 +763,10 @@ if uploaded_file:
                     "ON_HAND_QUANTITY",
                     "IDEAL_MINIMUM",
                     "LATE_MRP_NEED_QTY",
-                    "SHORTAGE",
-                    "SHORTAGE_AMOUNT",
-                    "EXCESS",
-                    "EXCESS_AMOUNT",
+                    "SHORTAGE_YN",
+                    "SHORTAGE_QTY",
+                    "EXCESS_YN",
+                    "EXCESS_QTY",
                     "TRAILING_CONSUMPTION",
                     "AVG_DAILY_CONSUMPTION",
                     "SAFETY_STOCK",
@@ -655,15 +777,44 @@ if uploaded_file:
             ]
         )
 
-        # --- UI for WHY Metrics ---
-        st.markdown("🔍 WHY Metrics Results")
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    col1.metric("📦 % Late Purchase Orders", f"{po_late_percent:.1f}%")
-    col2.metric("🏭 % Late Work Orders", f"{wo_late_percent:.1f}%")
-    col3.metric("📈 PO Lead Time Accuracy", f"{po_lead_time_accuracy:.1f}%")
-    col4.metric("🛠️ WO Lead Time Accuracy", f"{wo_lead_time_accuracy:.1f}%")
-    col5.metric("📊 Combined LT Accuracy", f"{combined_lt_accuracy:.1f}%")
-    col6.metric("🧯 % of Parts with High Scrap", f"{high_scrap_percent:.1f}%")
+    po_late_pct = (
+        all_orders_df.loc[all_orders_df["ORDER_TYPE"] == "PO", "IS_LATE"]
+        .dropna()
+        .mean()
+        * 100
+    )
+    wo_late_pct = (
+        all_orders_df.loc[all_orders_df["ORDER_TYPE"] == "WO", "IS_LATE"]
+        .dropna()
+        .mean()
+        * 100
+    )
+
+    # --- UI for WHY Metrics ---
+    st.markdown("🔍 WHY Metrics Results")
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+    col1.metric("📦 % Late Purchase Orders", f"{po_late_pct:.1f}%")
+    col2.metric("🏭 % Late Work Orders", f"{wo_late_pct:.1f}%")
+    col3.metric(
+        "📈 PO Lead Time Accuracy",
+        f"{(why_part_detail_df['PO_LEAD_TIME_ACCURATE'].dropna().mean() * 100):.1f}%",
+    )
+    col4.metric(
+        "🛠️ WO Lead Time Accuracy",
+        f"{(why_part_detail_df['WO_LEAD_TIME_ACCURATE'].dropna().mean() * 100):.1f}%",
+    )
+    col5.metric(
+        "📊 Combined LT Accuracy",
+        f"{(why_part_detail_df['COMBINED_LT_ACCURATE'].dropna().mean() * 100):.1f}%",
+    )
+    col6.metric(
+        "📈 % Parts w/ Ideal Safety Stock",
+        f"{(why_part_detail_df['SS_COMPLIANT_PART'].dropna().mean() * 100):.1f}%",
+    )
+    col7.metric(
+        "🧯 % of Parts with High Scrap",
+        f"{(why_part_detail_df['HIGH_SCRAP_PART'].dropna().mean() * 100):.1f}%",
+    )
 
     with st.expander("📄 Show detailed WHY part-level table"):
         st.markdown("### Detailed WHY Metrics Table — by Part")
@@ -676,14 +827,19 @@ if uploaded_file:
                     "SAFETY_STOCK",
                     "AVG_DAILY_CONSUMPTION",
                     "IDEAL_SS",
+                    "SS_DEVIATION_PCT",
                     "SS_COMPLIANT_PART",
                     "PO_LEAD_TIME_ACCURATE",
+                    "PO_LT_ACCURACY_PCT",
                     "WO_LEAD_TIME_ACCURATE",
+                    "WO_LT_ACCURACY_PCT",
                     "AVG_WO_LEAD_TIME",
                     "AVG_PO_LEAD_TIME",
                     "COMBINED_LT",
                     "COMBINED_LT_ACCURATE",
+                    "COMBINED_LT_ACCURACY_PCT",
                     "AVG_SCRAP_RATE",
+                    "HIGH_SCRAP_PART",
                 ]
             ]
         )
@@ -691,85 +847,21 @@ if uploaded_file:
     with st.expander("📄 Show detailed WHY order-level table"):
         st.markdown("### Detailed WHY Metrics Table — by Order")
 
-        po_order_df = po_df[po_df["STATUS"].str.lower().isin(["open", "closed"])]
-        po_order_df["ERP_LEAD_TIME"] = po_order_df["PART_ID"].map(
-            part_master_df.set_index("PART_ID")["LEAD_TIME"]
-        )
-        po_order_df["RECEIPT_DATE"] = pd.to_datetime(
-            po_order_df["RECEIPT_DATE"], errors="coerce"
-        )
-        po_order_df["NEED_BY_DATE"] = pd.to_datetime(
-            po_order_df["NEED_BY_DATE"], errors="coerce"
-        )
-        po_order_df = po_order_df.dropna(subset=["RECEIPT_DATE", "NEED_BY_DATE"])
-        po_order_df["LT_DAYS"] = (
-            po_order_df["RECEIPT_DATE"] - po_order_df["NEED_BY_DATE"]
-        ).dt.days
-        po_order_df = po_order_df.assign(
-            ORDER_TYPE="PO",
-            ORDER_ID=po_order_df["PO_LINE_ID"],
-            NEED_BY_DATE=po_order_df["NEED_BY_DATE"],
-            RECEIPT_DATE=po_order_df["RECEIPT_DATE"],
-            IS_LATE=po_order_df["RECEIPT_DATE"] > po_order_df["NEED_BY_DATE"],
-            LT_ACCURACY_FLAG=(
-                abs(po_order_df["LT_DAYS"] - po_order_df["ERP_LEAD_TIME"])
-                / po_order_df["ERP_LEAD_TIME"]
-            )
-            <= lt_tolerance_pct,
-        )
-
-        wo_order_df = wo_df[wo_df["STATUS"].str.lower().isin(["open", "closed"])]
-        wo_order_df["ERP_LEAD_TIME"] = wo_order_df["PART_ID"].map(
-            part_master_df.set_index("PART_ID")["LEAD_TIME"]
-        )
-        wo_order_df["LT_DAYS"] = (
-            wo_order_df["COMPLETION_DATE"] - wo_order_df["DUE_DATE"]
-        ).dt.days
-        wo_order_df = wo_order_df.assign(
-            ORDER_TYPE="WO",
-            ORDER_ID=wo_order_df["WO_ID"],
-            NEED_BY_DATE=wo_order_df["DUE_DATE"],
-            RECEIPT_DATE=wo_order_df["COMPLETION_DATE"],
-            IS_LATE=wo_order_df["COMPLETION_DATE"] > wo_order_df["DUE_DATE"],
-            LT_ACCURACY_FLAG=(
-                abs(wo_order_df["LT_DAYS"] - wo_order_df["ERP_LEAD_TIME"])
-                / wo_order_df["ERP_LEAD_TIME"]
-            )
-            <= lt_tolerance_pct,
-        )
-
-        po_order_df["PLANNING_METHOD"] = po_order_df["PART_ID"].map(
-            part_master_df.set_index("PART_ID")["PLANNING_METHOD"]
-        )
-        wo_order_df["PLANNING_METHOD"] = wo_order_df["PART_ID"].map(
-            part_master_df.set_index("PART_ID")["PLANNING_METHOD"]
-        )
-
-        all_orders_df = pd.concat([po_order_df, wo_order_df], ignore_index=True)
-        all_orders_df = all_orders_df.dropna(
-            subset=["ORDER_ID", "PART_ID", "NEED_BY_DATE", "RECEIPT_DATE"]
-        )
-        all_orders_df["ORDER_ID"] = all_orders_df["ORDER_ID"].astype(str)
-        all_orders_df["PART_ID"] = all_orders_df["PART_ID"].astype(str)
-
-        st.session_state["all_orders_df"] = all_orders_df.copy()
-
         st.dataframe(
             all_orders_df[
                 [
                     "ORDER_TYPE",
                     "ORDER_ID",
                     "PART_ID",
-                    "PART_NUMBER",  # 🆕 for readability
-                    "PLANNING_METHOD",  # 🆕 for MRP/ROP context
-                    "QUANTITY",  # 🆕 key for shortfall analysis
+                    "PART_NUMBER",
+                    "PLANNING_METHOD",
+                    "QUANTITY",
                     "NEED_BY_DATE",
                     "RECEIPT_DATE",
+                    "START_DATE",
                     "STATUS",
                     "IS_LATE",
-                    "ERP_LEAD_TIME",
-                    "LT_DAYS",
-                    "LT_ACCURACY_FLAG",
+                    "ACTUAL_LT_DAYS",
                 ]
             ]
         )
@@ -787,6 +879,7 @@ friendly_name_map = {
     "get_lead_time_accuracy_summary": "Lead Time Accuracy",
     "get_ss_accuracy_summary": "Safety Stock Accuracy",
     "get_late_orders_summary": "Late Orders",
+    "smart_filter_rank_summary": "Filtered & Ranked Summary",  # ✅ new name added
 }
 
 # ------ Combined Function Text ------------
@@ -822,6 +915,9 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                     if isinstance(result, list):
                         df = pd.DataFrame(result)
                         if not df.empty:
+                            # ✅ Drop SORT_VALUE for clean display
+                            if "SORT_VALUE" in df.columns:
+                                df = df.drop(columns=["SORT_VALUE"])
                             results.append(df)
                     else:
                         st.warning(
@@ -831,7 +927,7 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                 if len(results) == 0:
                     st.warning("No results returned from any matched function.")
                 elif len(results) == 1:
-                    st.dataframe(results[0])
+                    st.dataframe(results[0])  # ✅ already cleaned above
 
                 else:
                     if match_type == "intersection":
@@ -851,6 +947,10 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                         if merged_df.empty:
                             st.info("⚠️ No parts matched all selected criteria.")
                         else:
+                            # ✅ Drop SORT_VALUE again just in case
+                            if "SORT_VALUE" in merged_df.columns:
+                                merged_df = merged_df.drop(columns=["SORT_VALUE"])
+
                             st.info(
                                 f"📘 Merge Type: INTERSECTION — showing parts that meet all {len(results)} criteria."
                             )
@@ -862,6 +962,10 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                     else:  # union
                         combined_df = pd.concat(results, ignore_index=True)
                         combined_df = combined_df.drop_duplicates(subset="PART_NUMBER")
+
+                        # ✅ Drop SORT_VALUE from union result
+                        if "SORT_VALUE" in combined_df.columns:
+                            combined_df = combined_df.drop(columns=["SORT_VALUE"])
 
                         st.info(
                             f"📘 Merge Type: UNION — showing all parts that met at least one of the {len(results)} criteria."

@@ -5,12 +5,180 @@ from openai import OpenAI as OpenAIClient
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
 
+# ✅ Master Column Metadata Dictionary
+
+column_metadata = {
+    # Boolean fields
+    "SHORTAGE_YN": "bool",
+    "EXCESS_YN": "bool",
+    "SS_COMPLIANT_PART": "bool",
+    "HIGH_SCRAP_PART": "bool",
+    "ACCURATE": "bool",
+    "IS_LATE": "bool",
+    "PO_LEAD_TIME_ACCURATE": "bool",
+    "WO_LEAD_TIME_ACCURATE": "bool",
+    "COMBINED_LT_ACCURATE": "bool",
+    # Numeric fields
+    "SHORTAGE_QTY": "numeric",
+    "EXCESS_QTY": "numeric",
+    "INVENTORY_TURNS": "numeric",
+    "AVG_SCRAP_RATE": "numeric",
+    "COMBINED_LT_ACCURACY_PCT": "numeric",
+    "PO_LT_ACCURACY_PCT": "numeric",
+    "WO_LT_ACCURACY_PCT": "numeric",
+    "AVG_PO_LEAD_TIME": "numeric",
+    "AVG_WO_LEAD_TIME": "numeric",
+    "COMBINED_LT": "numeric",
+    "ERP_LEAD_TIME": "numeric",
+    "AVG_LEAD_TIME": "numeric",
+    "SS_DEVIATION_PCT": "numeric",
+    "SS_DEVIATION_QTY": "numeric",
+    "DAYS_LATE": "numeric",
+    "ON_HAND_QUANTITY": "numeric",
+    "IDEAL_MINIMUM": "numeric",
+    "IDEAL_MAXIMUM": "numeric",
+    "SAFETY_STOCK": "numeric",
+    "IDEAL_SS": "numeric",
+    "TRAILING_CONSUMPTION": "numeric",
+    # String / Categorical fields
+    "PART_NUMBER": "string",
+    "PART_ID": "string",
+    "DESCRIPTION": "string",
+    "PLANNING_METHOD": "string",
+    "MAKE_BUY_CODE": "string",
+    "ORDER_TYPE": "string",
+    "STATUS": "string",
+    "NEED_BY_DATE": "string",
+    "RECEIPT_DATE": "string",
+    "PLANNER": "string",
+    "BUYER": "string",
+    "SUPPLIER": "string",
+    "COMMODITY": "string",
+    "START_DATE": "string",
+    "DUE_DATE": "string",
+    "COMPLETION_DATE": "string",
+    "PCT_LATE": "numeric",
+}
+
+# ✅ Column list for GPT guidance (for prompt system messages)
+column_list = {
+    "bool_columns": [
+        "SHORTAGE_YN",
+        "EXCESS_YN",
+        "SS_COMPLIANT_PART",
+        "HIGH_SCRAP_PART",
+        "ACCURATE",
+        "IS_LATE",
+        "PO_LEAD_TIME_ACCURATE",
+        "WO_LEAD_TIME_ACCURATE",
+        "COMBINED_LT_ACCURATE",
+    ],
+    "numeric_columns": [
+        "SHORTAGE_QTY",
+        "EXCESS_QTY",
+        "INVENTORY_TURNS",
+        "AVG_SCRAP_RATE",
+        "COMBINED_LT_ACCURACY_PCT",
+        "PO_LT_ACCURACY_PCT",
+        "WO_LT_ACCURACY_PCT",
+        "AVG_PO_LEAD_TIME",
+        "AVG_WO_LEAD_TIME",
+        "COMBINED_LT",
+        "ERP_LEAD_TIME",
+        "AVG_LEAD_TIME",
+        "SS_DEVIATION_PCT",
+        "SS_DEVIATION_QTY",
+        "DAYS_LATE",
+        "LT_DAYS",
+        "ON_HAND_QUANTITY",
+        "IDEAL_MINIMUM",
+        "IDEAL_MAXIMUM",
+        "SAFETY_STOCK",
+        "IDEAL_SS",
+        "TRAILING_CONSUMPTION",
+        "PCT_LATE",
+    ],
+    "string_columns": [
+        "PART_NUMBER",
+        "PART_ID",
+        "DESCRIPTION",
+        "PLANNING_METHOD",
+        "MAKE_BUY_CODE",
+        "ORDER_TYPE",
+        "STATUS",
+        "NEED_BY_DATE",
+        "RECEIPT_DATE",
+        "PLANNER",
+        "BUYER",
+        "SUPPLIER",
+        "COMMODITY",
+        "START_DATE",
+        "DUE_DATE",
+        "COMPLETION_DATE",
+    ],
+}
+
+column_list_text = (
+    "Available columns:\n"
+    f"- Boolean: {', '.join(column_list['bool_columns'])}\n"
+    f"- Numeric: {', '.join(column_list['numeric_columns'])}\n"
+    f"- String: {', '.join(column_list['string_columns'])}\n"
+)
+
 # ----------------------------------------
 # GPT Callable Metric Functions
 # ----------------------------------------
 
+# --------- Universal Filters --------------
 
-# ------------ SHORTAGES ---------------
+
+def apply_universal_filters(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
+
+    # Display only non-null filter values
+    non_null_filters = {k: v for k, v in kwargs.items() if v is not None}
+    st.info(f"🌐 Universal filters applied:\n{json.dumps(non_null_filters)}")
+
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+
+    # PART_NUMBER
+    if "part_number" in kwargs and "PART_NUMBER" in df.columns:
+        df = df[df["PART_NUMBER"] == kwargs["part_number"]]
+
+    # PLANNING_METHOD
+    if "planning_method" in kwargs and "PLANNING_METHOD" in df.columns:
+        pm = kwargs["planning_method"]
+        if isinstance(pm, dict):
+            pm = list(pm.values())
+        elif isinstance(pm, str):
+            pm = [pm]
+        df = df[df["PLANNING_METHOD"].isin(pm)]
+
+    # # ACCURACY FILTER (can be boolean or %)
+    # if "accuracy_filter" in kwargs and "ACCURATE" in df.columns:
+    #     val = kwargs["accuracy_filter"]
+    #     if val == "accurate":
+    #         df = df[df["ACCURATE"] == True]
+    #     elif val == "inaccurate":
+    #         df = df[df["ACCURATE"] == False]
+
+    # COMPLIANT ONLY
+    if kwargs.get("compliant_only") and "SS_COMPLIANT_PART" in df.columns:
+        df = df[df["SS_COMPLIANT_PART"] == True]
+
+    # HIGH ONLY
+    if kwargs.get("high_only") and "HIGH_SCRAP_PART" in df.columns:
+        df = df[df["HIGH_SCRAP_PART"] == True]
+
+    # PLACEHOLDER FIELDS
+    for field in ["planner", "buyer", "supplier", "make_or_buy", "commodity"]:
+        col = field.upper()
+        if field in kwargs and col in df.columns:
+            df = df[df[col] == kwargs[field]]
+
+    return df
+
+
+# ------------ SHORTAGE CALL ---------------
 def get_material_shortage_summary(
     top_n: int = None,
     part_number: str = None,
@@ -42,24 +210,21 @@ def get_material_shortage_summary(
         A list of shortage records including key audit fields.
     """
     df = st.session_state.get("combined_part_detail_df", pd.DataFrame())
-    if df.empty or "SHORTAGE" not in df.columns:
+    if df.empty or "SHORTAGE_YN" not in df.columns:
         return []
 
-    df_short = df[df["SHORTAGE"] == True].copy()
+    # 🔁 Apply universal filters using kwargs (same as your parameter names)
+    args = {k: v for k, v in locals().items() if k not in ["df", "args"]}
 
-    # Optional: filter by part number
-    if part_number:
-        df_short = df_short[df_short["PART_NUMBER"] == part_number]
+    df = apply_universal_filters(df, **args)
 
-    # Optional: filter by planning method(s)
-    if planning_method and "PLANNING_METHOD" in df_short.columns:
-        if isinstance(planning_method, str):
-            planning_method = [planning_method]
-        df_short = df_short[df_short["PLANNING_METHOD"].isin(planning_method)]
+    # Now filter to just shortage parts
+    df_short = df[df["SHORTAGE_YN"] == True].copy()
 
     # Only show meaningful shortage values
-    df_short = df_short[df_short["SHORTAGE_AMOUNT"] > 0]
-    df_short = df_short.sort_values(by="SHORTAGE_AMOUNT", ascending=False)
+    df_short = df_short[df_short["SHORTAGE_QTY"].notnull()]
+    df_short = df_short[df_short["SHORTAGE_QTY"] > 0]
+    df_short = df_short.sort_values(by="SHORTAGE_QTY", ascending=False)
 
     if top_n is not None:
         df_short = df_short.head(top_n)
@@ -70,7 +235,7 @@ def get_material_shortage_summary(
         "ON_HAND_QUANTITY",
         "IDEAL_MINIMUM",
         "LATE_MRP_NEED_QTY",
-        "SHORTAGE_AMOUNT",
+        "SHORTAGE_QTY",
     ]
 
     missing_cols = set(cols_to_return) - set(df_short.columns)
@@ -117,21 +282,21 @@ def get_excess_inventory_summary(
         A list of excess inventory records including key audit fields.
     """
     df = st.session_state.get("combined_part_detail_df", pd.DataFrame())
-    if df.empty or "EXCESS" not in df.columns:
+    if df.empty or "EXCESS_YN" not in df.columns:
         return []
 
-    df_excess = df[df["EXCESS"] == True].copy()
+    # 🔁 Apply universal filters using kwargs (same as your parameter names)
+    args = {k: v for k, v in locals().items() if k not in ["df", "args"]}
 
-    if part_number:
-        df_excess = df_excess[df_excess["PART_NUMBER"] == part_number]
+    df = apply_universal_filters(df, **args)
 
-    if planning_method and "PLANNING_METHOD" in df_excess.columns:
-        if isinstance(planning_method, str):
-            planning_method = [planning_method]
-        df_excess = df_excess[df_excess["PLANNING_METHOD"].isin(planning_method)]
+    # ✅ Now filter to just excess parts
+    df_excess = df[df["EXCESS_YN"] == True].copy()
 
-    df_excess = df_excess[df_excess["EXCESS_AMOUNT"] > 0]
-    df_excess = df_excess.sort_values(by="EXCESS_AMOUNT", ascending=False)
+    # ✅ Continue with post-filtering logic
+    df_excess = df_excess[df_excess["EXCESS_QTY"].notnull()]
+    df_excess = df_excess[df_excess["EXCESS_QTY"] > 0]
+    df_excess = df_excess.sort_values(by="EXCESS_QTY", ascending=False)
 
     if top_n is not None:
         df_excess = df_excess.head(top_n)
@@ -142,7 +307,7 @@ def get_excess_inventory_summary(
         "ON_HAND_QUANTITY",
         "IDEAL_MAXIMUM",
         "LATE_MRP_NEED_QTY",
-        "EXCESS_AMOUNT",
+        "EXCESS_QTY",
     ]
 
     existing_cols = [col for col in cols_to_return if col in df_excess.columns]
@@ -186,17 +351,13 @@ def get_inventory_turns_summary(
     if df.empty or "INVENTORY_TURNS" not in df.columns:
         return []
 
+    # 🔁 Apply universal filters using kwargs (same as your parameter names)
+    args = {k: v for k, v in locals().items() if k not in ["df", "args"]}
+    df = apply_universal_filters(df, **args)
+
     df_turns = df.copy()
 
-    if part_number:
-        df_turns = df_turns[df_turns["PART_NUMBER"] == part_number]
-
-    if planning_method and "PLANNING_METHOD" in df_turns.columns:
-        if isinstance(planning_method, str):
-            planning_method = [planning_method]
-        df_turns = df_turns[df_turns["PLANNING_METHOD"].isin(planning_method)]
-
-    df_turns = df_turns[df_turns["TRAILING_CONSUMPTION"] > 0]
+    df_turns = df_turns[df_turns["INVENTORY_TURNS"].notnull()]
     df_turns = df_turns.sort_values(by="INVENTORY_TURNS", ascending=True)
 
     if top_n:
@@ -251,16 +412,19 @@ def get_scrap_rate_summary(
     if df.empty or "AVG_SCRAP_RATE" not in df.columns:
         return []
 
+    # 🔁 Apply universal filters using kwargs (same as your parameter names)
+    args = {k: v for k, v in locals().items() if k not in ["df", "args"]}
+    df = apply_universal_filters(df, **args)
+
     df_scrap = df.copy()
+    # ✅ Remove parts with no valid denominator (i.e., no consumption or scrap activity)
+    if "SCRAP_DENOMINATOR" in df_scrap.columns:
+        df_scrap = df_scrap[df_scrap["AVG_SCRAP_RATE"].notnull()]
+        df_scrap = df_scrap[df_scrap["SCRAP_DENOMINATOR"] > 0]
 
-    if part_number:
-        df_scrap = df_scrap[df_scrap["PART_NUMBER"] == part_number]
-
-    if high_only:
-        df_scrap = df_scrap[df_scrap["AVG_SCRAP_RATE"] > 0.10]
-
-    df_scrap = df_scrap[df_scrap["AVG_SCRAP_RATE"] > 0]
-    df_scrap = df_scrap.sort_values(by="AVG_SCRAP_RATE", ascending=False)
+    # Determine sort direction: high = bad, so default to ascending unless high_only is True
+    sort_desc = locals().get("high_only", False)
+    df_scrap = df_scrap.sort_values(by="AVG_SCRAP_RATE", ascending=not sort_desc)
 
     if top_n:
         df_scrap = df_scrap.head(top_n)
@@ -288,86 +452,73 @@ def get_lead_time_accuracy_summary(
     commodity: str = None,
 ):
     """
-    GPT-callable: Returns lead time accuracy summary for POs, WOs, or combined.
+    GPT-callable: Returns a filtered list of parts with lead time accuracy data.
 
     Parameters
     ----------
     top_n : int
-        Max rows to return, sorted by lowest accuracy.
+        Max number of parts to return.
     part_number : str
-        If specified, filters to this part number.
+        If provided, only return data for this part.
     order_type : str
-        "PO", "WO", or "Combined"
+        PO, WO, or Combined (affects which accuracy/avg_lt column is used).
     accuracy_filter : str
-        "accurate", "inaccurate", or None
+        If provided, filters based on accuracy level.
 
     Returns
     -------
     List[Dict]
-        A filtered list of lead time accuracy records.
+        A list of lead time accuracy records.
     """
+
     df = st.session_state.get("combined_part_detail_df", pd.DataFrame())
     if df.empty:
         return []
 
-    records = []
+    # 🆕 Assign accuracy columns based on order_type
+    if order_type == "PO":
+        df = df.copy()
+        df["ACCURATE"] = df.get("PO_LEAD_TIME_ACCURATE", None)
+        df["AVG_LEAD_TIME"] = df.get("AVG_PO_LEAD_TIME", None)
+        df["ACCURACY"] = df.get("PO_LT_ACCURACY_PCT", None)
+    elif order_type == "WO":
+        df = df.copy()
+        df["ACCURATE"] = df.get("WO_LEAD_TIME_ACCURATE", None)
+        df["AVG_LEAD_TIME"] = df.get("AVG_WO_LEAD_TIME", None)
+        df["ACCURACY"] = df.get("WO_LT_ACCURACY_PCT", None)
+    else:
+        df = df.copy()
+        df["ACCURATE"] = df.get("COMBINED_LT_ACCURATE", None)
+        df["AVG_LEAD_TIME"] = df.get("COMBINED_LT", None)
+        df["ACCURACY"] = df.get("COMBINED_LT_ACCURACY_PCT", None)
 
-    if order_type in [None, "PO"]:
-        po_df = df.copy()
-        if part_number:
-            po_df = po_df[po_df["PART_NUMBER"] == part_number]
-        if accuracy_filter == "accurate":
-            po_df = po_df[po_df["PO_LEAD_TIME_ACCURATE"] == True]
-        elif accuracy_filter == "inaccurate":
-            po_df = po_df[po_df["PO_LEAD_TIME_ACCURATE"] == False]
-        po_df = po_df[po_df["AVG_PO_LEAD_TIME"].notnull()]
-        po_df["ORDER_TYPE"] = "PO"
-        po_df["ACCURATE"] = po_df["PO_LEAD_TIME_ACCURATE"]
-        po_df["AVG_LEAD_TIME"] = po_df["AVG_PO_LEAD_TIME"]
-        po_df["ERP_LEAD_TIME"] = po_df["LEAD_TIME"]
-        records.append(po_df)
+    df = df[df["ACCURACY"].notnull()]  # Required for sorting + completeness
 
-    if order_type in [None, "WO"]:
-        wo_df = df.copy()
-        if part_number:
-            wo_df = wo_df[wo_df["PART_NUMBER"] == part_number]
-        if accuracy_filter == "accurate":
-            wo_df = wo_df[wo_df["WO_LEAD_TIME_ACCURATE"] == True]
-        elif accuracy_filter == "inaccurate":
-            wo_df = wo_df[wo_df["WO_LEAD_TIME_ACCURATE"] == False]
-        wo_df = wo_df[wo_df["AVG_WO_LEAD_TIME"].notnull()]
-        wo_df["ORDER_TYPE"] = "WO"
-        wo_df["ACCURATE"] = wo_df["WO_LEAD_TIME_ACCURATE"]
-        wo_df["AVG_LEAD_TIME"] = wo_df["AVG_WO_LEAD_TIME"]
-        wo_df["ERP_LEAD_TIME"] = wo_df["LEAD_TIME"]
-        records.append(wo_df)
+    # ✅ Universal filters
+    args = {k: v for k, v in locals().items() if k != "df"}
+    df = apply_universal_filters(df, **args)
 
-    if order_type in ["Combined"]:
-        combined_df = df.copy()
-        if part_number:
-            combined_df = combined_df[combined_df["PART_NUMBER"] == part_number]
-        if accuracy_filter == "accurate":
-            combined_df = combined_df[combined_df["COMBINED_LT_ACCURATE"] == True]
-        elif accuracy_filter == "inaccurate":
-            combined_df = combined_df[combined_df["COMBINED_LT_ACCURATE"] == False]
-        combined_df = combined_df[combined_df["COMBINED_LT"].notnull()]
-        combined_df["ORDER_TYPE"] = "Combined"
-        combined_df["ACCURATE"] = combined_df["COMBINED_LT_ACCURATE"]
-        combined_df["AVG_LEAD_TIME"] = combined_df["COMBINED_LT"]
-        combined_df["ERP_LEAD_TIME"] = combined_df["LEAD_TIME"]
-        records.append(combined_df)
-
-    if not records:
-        return []
-
-    full_df = pd.concat(records)
-    full_df = full_df.sort_values(by="ACCURATE", ascending=True)
+    # ✅ Sort only if no accuracy_filter is specified (i.e. it's a ranking prompt)
+    if accuracy_filter in ["accurate", "inaccurate"]:
+        # Already filtered by flag in universal filters
+        sort_desc = accuracy_filter == "accurate"
+        df = df.sort_values(by="AVG_LEAD_TIME", ascending=not sort_desc)
+    else:
+        df = df[df["ACCURACY"].notnull()]
+        df = df.sort_values(by="ACCURACY", ascending=True)
 
     if top_n:
-        full_df = full_df.head(top_n)
+        df = df.head(top_n)
 
-    return full_df[
-        ["PART_NUMBER", "ORDER_TYPE", "ERP_LEAD_TIME", "AVG_LEAD_TIME", "ACCURATE"]
+    return df[
+        [
+            "PART_NUMBER",
+            "ORDER_TYPE",
+            "ERP_LEAD_TIME",
+            "AVG_LEAD_TIME",
+            "ACCURATE",
+            "ACCURACY",
+        ]
     ].to_dict("records")
 
 
@@ -396,7 +547,7 @@ def get_ss_accuracy_summary(
     part_number : str
         If provided, return data for that specific part.
     compliant_only : bool
-        If True, only return parts where SS is within tolerance.
+        If True, only return parts where SS_COMPLIANT_PART == True.
 
     Returns
     -------
@@ -407,16 +558,18 @@ def get_ss_accuracy_summary(
     if df.empty or "SS_COMPLIANT_PART" not in df.columns:
         return []
 
+    # 🔁 Apply universal filters using kwargs (same as your parameter names)
+    args = {k: v for k, v in locals().items() if k not in ["df", "args"]}
+    df = apply_universal_filters(df, **args)
+
     df_ss = df.copy()
+    df_ss["ACCURACY"] = df_ss["SS_DEVIATION_PCT"]
 
-    if part_number:
-        df_ss = df_ss[df_ss["PART_NUMBER"] == part_number]
-
-    if compliant_only:
-        df_ss = df_ss[df_ss["SS_COMPLIANT_PART"] == True]
-
-    df_ss["SS_DEVIATION"] = abs(df_ss["SAFETY_STOCK"] - df_ss["IDEAL_SS"])
-    df_ss = df_ss.sort_values(by="SS_DEVIATION", ascending=False)
+    # Sort direction: best = lowest deviation if asking for accuracy
+    sort_desc = locals().get("accuracy_filter") != "accurate"
+    df_ss = df_ss[df_ss["SS_DEVIATION_PCT"].notnull()]
+    df_ss = df_ss.assign(SS_ABS_DEV=abs(df_ss["SS_DEVIATION_PCT"]))
+    df_ss = df_ss.sort_values(by="SS_ABS_DEV", ascending=not sort_desc)
 
     if top_n:
         df_ss = df_ss.head(top_n)
@@ -427,6 +580,8 @@ def get_ss_accuracy_summary(
             "PLANNING_METHOD",
             "SAFETY_STOCK",
             "IDEAL_SS",
+            "SS_DEVIATION_QTY",
+            "SS_DEVIATION_PCT",
             "SS_COMPLIANT_PART",
         ]
     ].to_dict("records")
@@ -436,6 +591,7 @@ def get_ss_accuracy_summary(
 
 
 def get_late_orders_summary(
+    filters: dict = None,
     top_n: int = None,
     part_number: str = None,
     order_type: str = None,
@@ -472,20 +628,31 @@ def get_late_orders_summary(
     if df.empty:
         return []
 
+    # 🔁 Apply universal filters using kwargs (same as your parameter names)
+    args = {k: v for k, v in locals().items() if k not in ["df", "args"]}
+    df = apply_universal_filters(df, **args)
+
     df_filtered = df.copy()
+
+    # 🧠 Apply dynamic filters from GPT 'filters' dict
+    if filters:
+        for col, val in filters.items():
+            matched_cols = [c for c in df_filtered.columns if c.upper() == col.upper()]
+            if matched_cols:
+                df_filtered = df_filtered[df_filtered[matched_cols[0]] == val]
+            else:
+                st.warning(f"⚠️ Filter field '{col}' not found in dataframe — skipping.")
 
     if order_type:
         df_filtered = df_filtered[df_filtered["ORDER_TYPE"] == order_type]
 
-    if part_number:
-        df_filtered = df_filtered[df_filtered["PART_NUMBER"] == part_number]
-
     if late_only:
         df_filtered = df_filtered[df_filtered["IS_LATE"] == True]
 
-    df_filtered["DAYS_LATE"] = (
-        df_filtered["RECEIPT_DATE"] - df_filtered["NEED_BY_DATE"]
-    ).dt.days
+    df_filtered = df_filtered[
+        df_filtered["RECEIPT_DATE"].notnull() & df_filtered["NEED_BY_DATE"].notnull()
+    ]
+
     df_filtered = df_filtered.sort_values(by="DAYS_LATE", ascending=False)
 
     if top_n:
@@ -498,17 +665,21 @@ def get_late_orders_summary(
             "PART_NUMBER",
             "PLANNING_METHOD",
             "STATUS",
+            "START_DATE",
             "NEED_BY_DATE",
             "RECEIPT_DATE",
             "IS_LATE",
             "DAYS_LATE",
+            "PCT_LATE",
             "ERP_LEAD_TIME",
-            "LT_DAYS",
+            "ACTUAL_LT_DAYS",
         ]
     ].to_dict("records")
 
 
 # ---------- Combined Function Call ---------
+
+# Accepts in the user prompt, identifies function to be called, sorts and filter arguments to be used, and other details needed to fun the later functions
 
 import re
 
@@ -528,38 +699,64 @@ def detect_functions_from_prompt(prompt: str):
 
     system_prompt = """
     You are an expert assistant helping users analyze supply and demand performance in a manufacturing ERP environment. Your job is to map user questions to one or more function calls from the available audit metrics.
-
+    
     Each function provides a specific type of supply or demand insight — such as shortages, excess inventory, scrap rates, safety stock accuracy, or lead time issues. Users may ask vague or compound questions. Handle these cases by:
-
+    
     1. Matching every function that reasonably applies.
-    2. Extracting relevant arguments like part_number, order_type, top_n, or planning_method when mentioned.
+    2. Extracting relevant arguments like part_number, order_type, top_n, planner, planning_method, or accuracy_filter when mentioned.
     3. Assuming defaults when needed (e.g. if part_number is not specified, return top rows).
     4. Supporting logical operators (AND/OR). If the user asks about multiple concerns, match all applicable functions.
-
+    5. If the user mentions any filtering criteria (e.g., "ROP", "planner = David", "only shortages", "just POs"), place those inside a `filters` dictionary:
+        Example: 
+        "filters": {
+            "PLANNING_METHOD": "ROP",
+            "PLANNER": "David",
+            "SHORTAGE_YN": true
+        }
+    6. If the user prompt suggests ranking or ordering (e.g., "top 5", "worst shortages", "best accuracy"), include a `sort` dictionary:
+        Example:
+        "sort": {
+            "field": "SS_DEVIATION_PCT",
+            "ascending": false
+        }
+    7. Only assign numeric columns to the `sort.field` value — like SHORTAGE_QTY, AVG_SCRAP_RATE, INVENTORY_TURNS, etc.
+    8. Do NOT assign boolean fields like SHORTAGE_YN or EXCESS_YN to the sort field. These can only be used in the `filters` dictionary.
+    9. Interpret ranking language:
+        - "best", "highest", "top", "most" → ascending = false
+        - "worst", "lowest", "bottom", "least" → ascending = true
+    10. There are certain fields where ranking language would have an inverse rank order. Currently those including Shortages, Excess, Safety Stock Deviations, Scrap Rates, and Days Late. For example - the worst safety stock deviation would be "ascending = false"
+    11. If the user adds ranking language in conjunction with terms that you intepret as a column (like the phrase "worst shortages"), then the user is looking for a sort and ranking on the SHORTAGE_QTY field, not a filter on the SHORTAGE_YN field.
+    12. The get_late_orders_summary function is looking at data about orders. So, it should only ever be chosen if the user asks for order-centric data. For example, "Show me all late orders." But something like "show me all parts with late orders," the prompt is asking for part-centric data.
     You MUST return a valid JSON dictionary in the following format:
     {
-    "functions": [
+      "functions": [
         {
-        "name": "get_scrap_rate_summary",
-        "arguments": {
-            "top_n": 5,
-            "planning_method": "ROP"
+          "name": "smart_filter_rank_summary",
+          "arguments": {
+            "filters": {
+              "SHORTAGE_YN": true,
+              "PLANNING_METHOD": "ROP"
+            },
+            "sort": {
+              "field": "SS_DEVIATION_PCT",
+              "ascending": false
+            },
+            "top_n": 5
+          }
         }
-        },
-        ...
-    ],
-    "match_type": "intersection"
+      ],
+      "match_type": "intersection"
     }
-
     If no functions apply to the user prompt, return:
     {
-    "functions": [],
-    "match_type": "intersection"
+      "functions": [],
+      "match_type": "intersection"
     }
     """.strip()
 
     user_prompt = (
         f"Available functions:\n{function_descriptions}\n\n"
+        f"{column_list_text}\n\n"
         f"User prompt:\n{prompt}\n\n"
         "Return a JSON dictionary with keys 'functions' and 'match_type'."
     )
@@ -581,90 +778,90 @@ def detect_functions_from_prompt(prompt: str):
 
     try:
         parsed = json.loads(raw)
-        function_calls = parsed.get("functions", [])
+        functions = parsed.get("functions", [])
         match_type = parsed.get("match_type", "intersection").lower()
-        return function_calls, match_type
+        return functions, match_type
     except Exception as e:
         print(f"⚠️ Failed to parse GPT response: {e}")
         return [], "intersection"
 
 
-# -------- Prompt Parameter Extraction ---------------
+# # -------- Prompt Parameter Extraction ---------------
 
 
-def extract_common_parameters(prompt: str) -> dict:
-    prompt = prompt.lower()
-    params = {}
+# def extract_common_parameters(prompt: str) -> dict:
+#     prompt = prompt.lower()
+#     params = {}
 
-    # Top N
-    if "top 10" in prompt:
-        params["top_n"] = 10
-    elif "top 5" in prompt:
-        params["top_n"] = 5
-    elif "top 3" in prompt:
-        params["top_n"] = 3
+#     if "top 5" in prompt:
+#         params["top_n"] = 5
+#     elif "top 10" in prompt:
+#         params["top_n"] = 10
+#     elif "top 3" in prompt:
+#         params["top_n"] = 3
+#     elif "top 7" in prompt:
+#         params["top_n"] = 7
 
-    # Accuracy filter (best/worst)
-    if "worst" in prompt or "lowest" in prompt:
-        params["accuracy_filter"] = "inaccurate"
-    elif "best" in prompt or "highest" in prompt:
-        params["accuracy_filter"] = "accurate"
+#     ranking_adjectives = ["most", "top", "best", "worst", "lowest", "highest"]
+#     is_ranking_prompt = any(x in prompt for x in ranking_adjectives)
 
-    # Planning method
-    if "rop" in prompt or "reorder point" in prompt:
-        params["planning_method"] = "ROP"
-    elif "mrp" in prompt:
-        params["planning_method"] = "MRP"
-    elif "min/max" in prompt or "min max" in prompt:
-        params["planning_method"] = "Min/Max"
+#     # Accuracy logic: ranking vs filtering
+#     if "accurate" in prompt or "inaccurate" in prompt:
+#         if "inaccurate" in prompt:
+#             params["accuracy_filter"] = "inaccurate"
+#         elif "accurate" in prompt:
+#             params["accuracy_filter"] = None if is_ranking_prompt else "accurate"
+#     elif "worst" in prompt or "lowest" in prompt:
+#         params["accuracy_filter"] = "inaccurate"
+#     elif "best" in prompt or "highest" in prompt:
+#         params["accuracy_filter"] = None
 
-    # Compliant only
-    if "compliant" in prompt or "accurate" in prompt:
-        params["compliant_only"] = True
+#     # Safety Stock compliant logic
+#     if "compliant" in prompt:
+#         if is_ranking_prompt:
+#             params["compliant_only"] = None
+#         else:
+#             params["compliant_only"] = True
 
-    # High only
-    if "high" in prompt or "extreme" in prompt or "above average" in prompt:
-        params["high_only"] = True
+#     # High Scrap logic
+#     if "high scrap" in prompt:
+#         if is_ranking_prompt:
+#             params["high_only"] = None
+#         else:
+#             params["high_only"] = True
 
-    # Late only
-    if "late only" in prompt or "only late" in prompt:
-        params["late_only"] = True
+#     # Late Order logic
+#     if "late" in prompt:
+#         if is_ranking_prompt:
+#             params["late_only"] = None
+#         else:
+#             params["late_only"] = True
 
-    # Order type
-    if "po" in prompt:
-        params["order_type"] = "PO"
-    elif "wo" in prompt:
-        params["order_type"] = "WO"
+#     # Shortage logic
+#     if "shortage" in prompt:
+#         params["filter_field"] = None if is_ranking_prompt else "SHORTAGE_YN"
 
-    # Placeholder fields (safe to add even if unused)
-    if "planner" in prompt:
-        match = re.search(r"planner[^\w]*(\w+)", prompt)
-        if match:
-            params["planner"] = match.group(1)
+#     # Excess logic
+#     if "excess" in prompt:
+#         params["filter_field"] = None if is_ranking_prompt else "EXCESS_YN"
 
-    if "buyer" in prompt:
-        match = re.search(r"buyer[^\w]*(\w+)", prompt)
-        if match:
-            params["buyer"] = match.group(1)
+#     # Order Type
+#     if "po" in prompt:
+#         params["order_type"] = "PO"
+#     elif "wo" in prompt:
+#         params["order_type"] = "WO"
 
-    if "supplier" in prompt:
-        match = re.search(r"supplier[^\w]*(\w+)", prompt)
-        if match:
-            params["supplier"] = match.group(1)
+#     # Planning method
+#     if "min/max" in prompt or "min max" in prompt or "min-max" in prompt:
+#         params["planning_method"] = "MIN_MAX"
+#     elif "mrp" in prompt:
+#         params["planning_method"] = "MRP"
+#     elif "rop" in prompt:
+#         params["planning_method"] = "ROP"
 
-    if "commodity" in prompt:
-        match = re.search(r"commodity[^\w]*(\w+)", prompt)
-        if match:
-            params["commodity"] = match.group(1)
+#     st.write("🧪 Extracted params from prompt:", params)
 
-    if "make" in prompt and "buy" in prompt:
-        params["make_or_buy"] = "Both"
-    elif "make" in prompt:
-        params["make_or_buy"] = "Make"
-    elif "buy" in prompt:
-        params["make_or_buy"] = "Buy"
-
-    return params
+#     return params
 
 
 # ---------- Routed Function Call -----------
@@ -676,17 +873,20 @@ def route_gpt_function_call(name: str, args: dict):
     Filters args based on function signature.
     """
     router = {
-        "get_material_shortage_summary": get_material_shortage_summary,
-        "get_excess_inventory_summary": get_excess_inventory_summary,
-        "get_inventory_turns_summary": get_inventory_turns_summary,
-        "get_scrap_rate_summary": get_scrap_rate_summary,
-        "get_lead_time_accuracy_summary": get_lead_time_accuracy_summary,
-        "get_ss_accuracy_summary": get_ss_accuracy_summary,
+        # "get_material_shortage_summary": get_material_shortage_summary,
+        # "get_excess_inventory_summary": get_excess_inventory_summary,
+        # "get_inventory_turns_summary": get_inventory_turns_summary,
+        # "get_scrap_rate_summary": get_scrap_rate_summary,
+        # "get_lead_time_accuracy_summary": get_lead_time_accuracy_summary,
+        # "get_ss_accuracy_summary": get_ss_accuracy_summary,
         "get_late_orders_summary": get_late_orders_summary,
+        "smart_filter_rank_summary": smart_filter_rank_summary,
     }
 
     if name not in router:
         return f"⚠️ No matching function found for: {name}"
+
+    st.write("🧠 GPT raw function name + args:", name, args)
 
     fn = router[name]
 
@@ -696,12 +896,126 @@ def route_gpt_function_call(name: str, args: dict):
     sig = inspect.signature(fn)
     accepted_args = {k: v for k, v in args.items() if k in sig.parameters}
 
-    # Universal parameter sanitization (flatten any dict values)
-    for key, val in accepted_args.items():
-        if isinstance(val, dict):
-            accepted_args[key] = next(iter(val.values()), val)
+    st.write("📦 Final accepted args to function:", accepted_args)
+
+    # 👇 Debug display in UI
+    import json
+
+    st.info(
+        "🔍 Function `{}` called with parameters:\n\n{}".format(
+            name, json.dumps(accepted_args, indent=2)
+        )
+    )
 
     return fn(**accepted_args)
+
+
+# ------ SMART FILTER ROUTER ---------
+
+
+def smart_filter_rank_summary(
+    filters: dict = None,
+    sort: dict = None,
+    top_n: int = 5,
+    return_fields=None,
+    part_number: str = None,
+    planning_method: str | list[str] = None,
+    accuracy_filter: str = None,
+    compliant_only: bool = None,
+    high_only: bool = None,
+    planner: str = None,
+    buyer: str = None,
+    supplier: str = None,
+    make_or_buy: str = None,
+    commodity: str = None,
+    order_type: str = None,
+):
+    """
+    Dynamically filters and ranks combined_part_detail_df based on provided fields.
+
+    Parameters
+    ----------
+    filters : dict
+        Dictionary of column-value pairs to filter the data.
+    sort : dict
+        Dictionary with 'field' and 'ascending' keys for sorting.
+    top_n : int
+        Number of rows to return after sorting.
+
+    Returns
+    -------
+    List[Dict]
+        Filtered and sorted part records.
+    """
+
+    df = st.session_state.get("combined_part_detail_df", pd.DataFrame())
+
+    args = {
+        k: v for k, v in locals().items() if k not in ["df", "args", "filters", "sort"]
+    }
+
+    st.info("🔍 Smart filter args:\n" + json.dumps(args, indent=2))
+
+    df = apply_universal_filters(df, **args)
+
+    # # 🔁 Inject lead time accuracy columns based on ORDER_TYPE
+    # order_type = args.get("order_type", None)
+
+    # if order_type == "PO":
+    #     df["ACCURATE"] = df.get("PO_LEAD_TIME_ACCURATE")
+    #     df["AVG_LEAD_TIME"] = df.get("AVG_PO_LEAD_TIME")
+    #     df["ACCURACY"] = df.get("PO_LT_ACCURACY_PCT")
+    # elif order_type == "WO":
+    #     df["ACCURATE"] = df.get("WO_LEAD_TIME_ACCURATE")
+    #     df["AVG_LEAD_TIME"] = df.get("AVG_WO_LEAD_TIME")
+    #     df["ACCURACY"] = df.get("WO_LT_ACCURACY_PCT")
+    # else:
+    #     df["ACCURATE"] = df.get("COMBINED_LT_ACCURATE")
+    #     df["AVG_LEAD_TIME"] = df.get("COMBINED_LT")
+    #     df["ACCURACY"] = df.get("COMBINED_LT_ACCURACY_PCT")
+
+    # 🧠 Apply dynamic filters
+    if filters:
+        for col, val in filters.items():
+            matched_cols = [c for c in df.columns if c.upper() == col.upper()]
+            if matched_cols:
+                df = df[df[matched_cols[0]] == val]
+            else:
+                st.warning(f"⚠️ Filter field '{col}' not found in dataframe — skipping.")
+
+    # 🧠 Apply dynamic sort fields
+    if not sort or "field" not in sort:
+        st.info("ℹ️ No sort field provided — returning unranked filtered results.")
+        return df.head(top_n).to_dict("records") if top_n else df.to_dict("records")
+
+    sort_field = sort["field"]
+    ascending = sort.get("ascending", False)
+
+    # 🧠 Case-insensitive column match for sort field
+    matched_sort_cols = [c for c in df.columns if c.upper() == sort_field.upper()]
+    if not matched_sort_cols:
+        st.warning(f"⚠️ Sort field '{sort_field}' not found in dataframe — skipping.")
+        return []
+
+    sort_field = matched_sort_cols[0]
+
+    if not pd.api.types.is_numeric_dtype(df[sort_field]):
+        st.warning(f"⚠️ Sort field '{sort_field}' is not numeric — skipping.")
+        return []
+
+    # ✅ Universal null filter for sort_field
+    df = df[df[sort_field].notnull()]
+
+    df["SORT_VALUE"] = abs(df[sort_field])
+
+    df = df.sort_values(by="SORT_VALUE", ascending=ascending).head(top_n)
+
+    if return_fields:
+        # Only return fields that exist in the dataframe
+        existing_cols = [col for col in return_fields if col in df.columns]
+        df = df[existing_cols]
+
+    return df.to_dict("records")
 
 
 # ----------------------------------------
@@ -805,7 +1119,7 @@ lead_time_accuracy_function_spec = {
 
 ss_accuracy_function_spec = {
     "name": "get_ss_accuracy_summary",
-    "description": "Returns a list of parts comparing ERP vs ideal safety stock values.",
+    "description": "Returns a list of parts comparing ERP vs ideal safety stock values and ranking them based on a deviation % from the ideal.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -833,19 +1147,87 @@ late_orders_function_spec = {
                 "type": "boolean",
                 "description": "If true, only return late orders.",
             },
+            "start_date": {
+                "type": "string",
+                "description": "Optional start date for the order (used for filtering).",
+            },
+            "need_by_date": {
+                "type": "string",
+                "description": "Optional due date for the order (used for filtering).",
+            },
+            "receipt_date": {
+                "type": "string",
+                "description": "Optional completion date for the order (used for filtering).",
+            },
+            "status": {
+                "type": "string",
+                "description": "Optional order status filter.",
+            },
+            "pct_late": {
+                "type": "number",
+                "description": "Percent days late relative to total lead time (0–100).",
+            },
         },
         "required": [],
     },
 }
 
+# -------- Smart Filters Function Spec ----------
+
+smart_filter_rank_function_spec = {
+    "name": "smart_filter_rank_summary",
+    "description": (
+        "Dynamically filters and ranks the main dataset using a boolean filter column "
+        "and a numeric sort column. Useful for prompts like 'top shortages with worst safety stock accuracy'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **universal_properties,
+            "filters": {
+                "type": "object",
+                "description": (
+                    "Dictionary of field-value pairs to apply as filters. Boolean fields are interpreted as is "
+                    "(e.g., SHORTAGE_YN: true), while string fields will filter for exact matches "
+                    "(e.g., PLANNING_METHOD: 'ROP')."
+                ),
+                "additionalProperties": {
+                    "oneOf": [
+                        {"type": "boolean"},
+                        {"type": "string"},
+                        {"type": "number"},
+                    ]
+                },
+            },
+            "sort": {
+                "type": "object",
+                "description": "Field and direction to sort the data by.",
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "description": "Name of the numeric column to sort by.",
+                    },
+                    "ascending": {
+                        "type": "boolean",
+                        "description": "If true, sort in ascending order.",
+                    },
+                },
+                "required": ["field"],
+            },
+        },
+    },
+}
+
+
 # --------- Combined Functional Spec ------------
 
 all_function_specs = [
-    shortage_function_spec,
-    excess_function_spec,
-    inventory_turns_function_spec,
-    scrap_rate_function_spec,
-    lead_time_accuracy_function_spec,
-    ss_accuracy_function_spec,
+    # shortage_function_spec,
+    # excess_function_spec,
+    # inventory_turns_function_spec,
+    # scrap_rate_function_spec,
+    # lead_time_accuracy_function_spec,
+    # ss_accuracy_function_spec,
     late_orders_function_spec,
+    smart_filter_rank_function_spec,
 ]
