@@ -286,30 +286,33 @@ def detect_functions_from_prompt(prompt: str):
     Each function provides a specific type of supply or demand insight — such as shortages, excess inventory, scrap rates, safety stock accuracy, or lead time issues. Users may ask vague or compound questions. Handle these cases by:
     
     1. Matching every function that reasonably applies.
-    2. Extracting relevant arguments like part_number, order_type, top_n, planner, planning_method, or accuracy_filter when mentioned.
-    3. Assuming defaults when needed (e.g. if part_number is not specified, return top rows).
-    4. Supporting logical operators (AND/OR). If the user asks about multiple concerns, match all applicable functions.
-    5. If the user mentions any filtering criteria (e.g., "ROP", "planner = David", "only shortages", "just POs"), place those inside a `filters` dictionary:
+    2. If the user asks **why** something is happening, or what is **causing** a problem (e.g., “why are there so many excess parts,” “what’s causing our low inventory turns”), match `get_root_cause_explanation`.
+    3. If the user ask for more details or data about certain PARTS, match the 'smart_filter_rank_summary' function.
+    4. If the user ask for more details or data about certain ORDERS, match the 'smart_filter_rank_summary' function.
+    5. Extracting relevant arguments like part_number, order_type, top_n, planner, planning_method, or accuracy_filter when mentioned.
+    6. Assuming defaults when needed (e.g. if part_number is not specified, return top rows).
+    7. Supporting logical operators (AND/OR). If the user asks about multiple concerns, match all applicable functions.
+    8. If the user mentions any filtering criteria (e.g., "ROP", "planner = David", "only shortages", "just POs"), place those inside a `filters` dictionary:
         Example: 
         "filters": {
             "PLANNING_METHOD": "ROP",
             "PLANNER": "David",
             "SHORTAGE_YN": true
         }
-    6. If the user prompt suggests ranking or ordering (e.g., "top 5", "worst shortages", "best accuracy"), include a `sort` dictionary:
+    9. If the user prompt suggests ranking or ordering (e.g., "top 5", "worst shortages", "best accuracy"), include a `sort` dictionary:
         Example:
         "sort": {
             "field": "SS_DEVIATION_PCT",
             "ascending": false
         }
-    7. Only assign numeric columns to the `sort.field` value — like SHORTAGE_QTY, AVG_SCRAP_RATE, INVENTORY_TURNS, etc.
-    8. Do NOT assign boolean fields like SHORTAGE_YN or EXCESS_YN to the sort field. These can only be used in the `filters` dictionary.
-    9. Interpret ranking language:
+    10. Only assign numeric columns to the `sort.field` value — like SHORTAGE_QTY, AVG_SCRAP_RATE, INVENTORY_TURNS, etc.
+    11. Do NOT assign boolean fields like SHORTAGE_YN or EXCESS_YN to the sort field. These can only be used in the `filters` dictionary.
+    12. Interpret ranking language:
         - "best", "highest", "top", "most" → ascending = false
         - "worst", "lowest", "bottom", "least" → ascending = true
-    10. There are certain fields where ranking language would have an inverse rank order. Currently those including Shortages, Excess, Safety Stock Deviations, Scrap Rates, and Days Late. For example - the worst safety stock deviation would be "ascending = false"
-    11. If the user adds ranking language in conjunction with terms that you intepret as a column (like the phrase "worst shortages"), then the user is looking for a sort and ranking on the SHORTAGE_QTY field, not a filter on the SHORTAGE_YN field.
-    12. The get_late_orders_summary function is looking at data about orders. So, it should only ever be chosen if the user asks for order-centric data. For example, "Show me all late orders." But something like "show me all parts with late orders," the prompt is asking for part-centric data.
+    13. There are certain fields where ranking language would have an inverse rank order. Currently those including Shortages, Excess, Safety Stock Deviations, Scrap Rates, and Days Late. For example - the worst safety stock deviation would be "ascending = false"
+    14. If the user adds ranking language in conjunction with terms that you intepret as a column (like the phrase "worst shortages"), then the user is looking for a sort and ranking on the SHORTAGE_QTY field, not a filter on the SHORTAGE_YN field.
+    15. The get_late_orders_summary function is looking at data about orders. So, it should only ever be chosen if the user asks for order-centric data. For example, "Show me all late orders." But something like "show me all parts with late orders," the prompt is asking for part-centric data.
     You MUST return a valid JSON dictionary in the following format:
     {
       "functions": [
@@ -386,6 +389,7 @@ def route_gpt_function_call(name: str, args: dict):
         # "get_ss_accuracy_summary": get_ss_accuracy_summary,
         "get_late_orders_summary": get_late_orders_summary,
         "smart_filter_rank_summary": smart_filter_rank_summary,
+        "get_root_cause_explanation": get_root_cause_explanation,
     }
 
     if name not in router:
@@ -400,6 +404,10 @@ def route_gpt_function_call(name: str, args: dict):
 
     sig = inspect.signature(fn)
     accepted_args = {k: v for k, v in args.items() if k in sig.parameters}
+
+    # Inject user_prompt if the function expects it and it's missing
+    if "user_prompt" in sig.parameters and "user_prompt" not in accepted_args:
+        accepted_args["user_prompt"] = st.session_state.get("last_user_prompt", "")
 
     st.write("📦 Final accepted args to function:", accepted_args)
 
@@ -421,7 +429,7 @@ def route_gpt_function_call(name: str, args: dict):
 def smart_filter_rank_summary(
     filters: dict = None,
     sort: dict = None,
-    top_n: int = 5,
+    top_n: int = None,
     return_fields=None,
     part_number: str = None,
     planning_method: str | list[str] = None,
@@ -505,6 +513,127 @@ def smart_filter_rank_summary(
         df = df[existing_cols]
 
     return df.to_dict("records")
+
+
+# ------------ Root Cause Explanation Function ------------
+
+
+def get_root_cause_explanation(
+    user_prompt: str, part_number: str = None, filters: dict = None
+) -> str:
+    """
+    Generates a GPT-based root cause explanation for a specific part, filtered group of parts, or overall dataset.
+    """
+
+    part_df = st.session_state.get("combined_part_detail_df", pd.DataFrame())
+    orders_df = st.session_state.get("all_orders_df", pd.DataFrame())
+
+    if part_df.empty:
+        return "No part-level audit data available to analyze root causes."
+
+    # Apply universal filters to both part-level and order-level data
+    args = {"part_number": part_number}
+    if filters:
+        args.update(filters)
+
+    part_df = apply_universal_filters(part_df, **args)
+    orders_df = apply_universal_filters(orders_df, **args)
+
+    if part_number:
+        orders_df = orders_df[orders_df["PART_NUMBER"] == part_number]
+
+    if part_df.empty:
+        return "No matching part-level data found based on the provided filters."
+
+    part_df = part_df.head(10)
+    orders_df = orders_df.head(10)
+
+    # Select key fields for GPT analysis
+    part_fields = [
+        "PART_NUMBER",
+        "PLANNING_METHOD",
+        "SHORTAGE_YN",
+        "SHORTAGE_QTY",
+        "EXCESS_YN",
+        "EXCESS_QTY",
+        "SS_COMPLIANT_PART",
+        "SS_DEVIATION_QTY",
+        "SS_DEVIATION_PCT",
+        "SAFETY_STOCK",
+        "IDEAL_SS",
+        "AVG_SCRAP_RATE",
+        "HIGH_SCRAP_PART",
+        "SCRAP_DENOMINATOR",
+        "TRAILING_CONSUMPTION",
+        "STD_DEV_CONSUMPTION",
+        "PO_LEAD_TIME_ACCURATE",
+        "PO_LT_ACCURACY_PCT",
+        "AVG_PO_LEAD_TIME",
+        "PO_COUNT",
+        "WO_LEAD_TIME_ACCURATE",
+        "WO_LT_ACCURACY_PCT",
+        "AVG_WO_LEAD_TIME",
+        "WO_COUNT",
+        "COMBINED_LT_ACCURATE",
+        "COMBINED_LT_ACCURACY_PCT",
+        "COMBINED_LT",
+        "ERP_LEAD_TIME",
+        "INVENTORY_TURNS",
+    ]
+    order_fields = [
+        "ORDER_TYPE",
+        "ORDER_ID",
+        "PART_NUMBER",
+        "STATUS",
+        "START_DATE",
+        "NEED_BY_DATE",
+        "RECEIPT_DATE",
+        "IS_LATE",
+        "DAYS_LATE",
+        "PCT_LATE",
+        "ERP_LEAD_TIME",
+        "ACTUAL_LT_DAYS",
+    ]
+
+    part_prompt = part_df[[c for c in part_fields if c in part_df.columns]]
+    orders_prompt = orders_df[[c for c in order_fields if c in orders_df.columns]]
+
+    # Convert to markdown tables
+    part_markdown = part_prompt.to_markdown(index=False)
+    orders_markdown = (
+        orders_prompt.to_markdown(index=False)
+        if not orders_prompt.empty
+        else "*No matching orders found.*"
+    )
+
+    system_msg = """
+    1. You are a supply chain analyst. A planner is asking why a part (or set of parts) is performing poorly — for example, when the user asks for root causes, explanations, biggest issues, most likely problems, reasons for excess inventory or shortages, or general performance concerns.
+    2. Analyze the provided part-level audit metrics and relevant orders. Identify which metrics or signals most likely explain the issue(s). Focus on root causes and call out which problem is most important to fix first. Do not list every field — just the most relevant ones.
+    3. There is a general order of operations when approaching planning fixes. Assuming all variables have issues, it tends to be appropriate to first fix how a part is planned (planning method). Then, amongst the other variables, it is important to note that lead time is a factor in almost everything, including calculating things like Safty Stock. So it is important to get that right.
+    4. Keep your response concise, direct, and focused. Avoid unnecessary elaboration or repetition.
+    """.strip()
+
+    user_msg = f"""
+    User question: {user_prompt}
+
+    Part-level audit summary:
+    {part_markdown}
+
+    Order-level sample:
+    {orders_markdown}
+    """
+
+    client = OpenAIClient(api_key=openai_api_key)
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.3,
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+
+    return response.choices[0].message.content.strip()
 
 
 # ----------------------------------------
@@ -619,10 +748,37 @@ smart_filter_rank_function_spec = {
     },
 }
 
+# --------- Root Cause Analyis Spec -----------
+
+
+root_cause_explanation_spec = {
+    "name": "get_root_cause_explanation",
+    "description": "Analyzes audit metrics and order history to explain the most likely root causes of issues for a specific part, group of parts, or the overall business.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_prompt": {
+                "type": "string",
+                "description": "The user's original question, used to guide GPT's reasoning (e.g., 'Why is PN123 always short?').",
+            },
+            "part_number": {
+                "type": "string",
+                "description": "Optional specific part number to focus the analysis on a single part.",
+            },
+            "filters": {
+                "type": "object",
+                "description": "Optional dictionary of filters to limit the analysis to a specific group of parts (e.g., planning method = MRP, planner = John).",
+                "additionalProperties": {"type": ["string", "number", "boolean"]},
+            },
+        },
+        "required": ["user_prompt"],
+    },
+}
 
 # --------- Combined Functional Spec ------------
 
 all_function_specs = [
     late_orders_function_spec,
     smart_filter_rank_function_spec,
+    root_cause_explanation_spec,
 ]

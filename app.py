@@ -10,26 +10,15 @@ import json
 
 
 from gpt_functions import (
-    get_material_shortage_summary,
-    get_excess_inventory_summary,
-    get_inventory_turns_summary,
-    get_scrap_rate_summary,
-    get_lead_time_accuracy_summary,
-    get_ss_accuracy_summary,
     get_late_orders_summary,
     route_gpt_function_call,
     detect_functions_from_prompt,
-    # extract_common_parameters,
     apply_universal_filters,
     smart_filter_rank_summary,
-    shortage_function_spec,
-    excess_function_spec,
-    inventory_turns_function_spec,
-    scrap_rate_function_spec,
-    lead_time_accuracy_function_spec,
-    ss_accuracy_function_spec,
+    get_root_cause_explanation,
     late_orders_function_spec,
     smart_filter_rank_function_spec,
+    root_cause_explanation_spec,
     all_function_specs,
 )
 
@@ -485,7 +474,13 @@ if uploaded_file:
         why_df = why_df.join(trailing_avg_daily.rename("AVG_DAILY_CONSUMPTION"))
         why_df = why_df.join(
             ss_df[
-                ["IDEAL_SS", "SS_DEVIATION_QTY", "SS_DEVIATION_PCT", "WITHIN_TOLERANCE"]
+                [
+                    "IDEAL_SS",
+                    "SS_DEVIATION_QTY",
+                    "SS_DEVIATION_PCT",
+                    "WITHIN_TOLERANCE",
+                    "STD_DEV_CONSUMPTION",
+                ]
             ].rename(columns={"WITHIN_TOLERANCE": "SS_COMPLIANT_PART"})
         )
         why_df = why_df.join(
@@ -500,6 +495,9 @@ if uploaded_file:
                     "PO_LEAD_TIME_ACCURATE",
                     "WO_LEAD_TIME_ACCURATE",
                     "COMBINED_LT_ACCURATE",
+                    "PO_COUNT",
+                    "WO_COUNT",
+                    "TOTAL_COUNT",
                 ]
             ]
         )
@@ -521,6 +519,11 @@ if uploaded_file:
             "COMBINED_LT_ACCURACY_PCT",
             "PO_LT_ACCURACY_PCT",
             "WO_LT_ACCURACY_PCT",
+            "WO_COUNT",
+            "PO_COUNT",
+            "TOTAL_COUNT",
+            "STD_DEV_CONSUMPTION",
+            "SCRAP_DENOMINATOR",
         ]
         why_df = normalize_numeric_columns(why_df, numeric_cols_why)
 
@@ -712,32 +715,10 @@ if uploaded_file:
     combined_part_detail_df = build_combined_part_df(
         what_part_detail_df, why_part_detail_df
     )
-    numeric_cols_combined = [
-        "LEAD_TIME",
-        "SAFETY_STOCK",
-        "MIN_QTY",
-        "MAX_QTY",
-        "ON_HAND_QUANTITY",
-        "TRAILING_CONSUMPTION",
-        "AVG_DAILY_CONSUMPTION",
-        "IDEAL_SS",
-        "AVG_PO_LEAD_TIME",
-        "AVG_WO_LEAD_TIME",
-        "AVG_SCRAP_RATE",
-        "IDEAL_MINIMUM",  # Required for GPT shortage amounts
-        "IDEAL_MAXIMUM",  # Used in excess logic
-        "EOQ",  # Shown in UI for ROP/MinMax sizing
-        "INVENTORY_TURNS",  # Displayed and summarized in UI
-        "LATE_MRP_NEED_QTY",  # Your new field: must normalize
-        "SHORTAGE_QTY",
-        "EXCESS_QTY",
-        "COMBINED_LT",
-        "PO_LT_ACCURACY_PCT",
-        "WO_LT_ACCURACY_PCT",
-    ]
-    combined_part_detail_df = normalize_numeric_columns(
-        combined_part_detail_df, numeric_cols_combined
-    )
+    # numeric_cols_combined = [] # no new fields being added
+    # combined_part_detail_df = normalize_numeric_columns(
+    #     combined_part_detail_df, numeric_cols_combined
+    # )
 
     st.session_state["combined_part_detail_df"] = combined_part_detail_df
 
@@ -872,14 +853,9 @@ if uploaded_file:
 
 
 friendly_name_map = {
-    "get_material_shortage_summary": "Material Shortages",
-    "get_excess_inventory_summary": "Excess Inventory",
-    "get_inventory_turns_summary": "Inventory Turns",
-    "get_scrap_rate_summary": "Scrap Rate",
-    "get_lead_time_accuracy_summary": "Lead Time Accuracy",
-    "get_ss_accuracy_summary": "Safety Stock Accuracy",
     "get_late_orders_summary": "Late Orders",
-    "smart_filter_rank_summary": "Filtered & Ranked Summary",  # ✅ new name added
+    "smart_filter_rank_summary": "Filtered & Ranked Summary",
+    "get_root_cause_explanation": "Root Cause Explanation",
 }
 
 # ------ Combined Function Text ------------
@@ -891,6 +867,7 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
 
     if st.button("Ask GPT (Multi-Metric)"):
         try:
+            st.session_state["last_user_prompt"] = user_prompt
             function_names, match_type = detect_functions_from_prompt(user_prompt)
 
             if not function_names:
@@ -906,6 +883,13 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                 st.success(f"✅ GPT matched: {', '.join(pretty_names)}")
                 st.info(f"🔗 Merge logic: {match_type.upper()} (based on your prompt)")
 
+                # Track whether any functions are expected to return tables
+                table_returning_functions = [
+                    "smart_filter_rank_summary",
+                    "get_late_orders_summary",
+                    # Add others here as needed
+                ]
+
                 results = []
                 for fn in function_names:
                     fn_name = fn.get("name")
@@ -915,22 +899,33 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                     if isinstance(result, list):
                         df = pd.DataFrame(result)
                         if not df.empty:
-                            # ✅ Drop SORT_VALUE for clean display
                             if "SORT_VALUE" in df.columns:
                                 df = df.drop(columns=["SORT_VALUE"])
                             results.append(df)
+
+                    elif isinstance(result, str):
+                        st.subheader(f"🧠 GPT Root Cause Explanation for: {fn_name}")
+                        st.markdown(result)
+
                     else:
                         st.warning(
-                            f"⚠️ {fn_name} did not return a list. Returned: {result}"
+                            f"⚠️ {fn_name} did not return a list or string. Returned: {result}"
                         )
 
-                if len(results) == 0:
-                    st.warning("No results returned from any matched function.")
+                # Only show warning if user matched a table-returning function and none returned data
+                matched_fn_names = [fn.get("name") for fn in function_names]
+
+                if any(name in table_returning_functions for name in matched_fn_names):
+                    if all(not isinstance(r, pd.DataFrame) or r.empty for r in results):
+                        st.warning(
+                            "No tabular results returned from any matched function."
+                        )
+
                 elif len(results) == 1:
                     st.dataframe(results[0])  # ✅ already cleaned above
 
                 else:
-                    if match_type == "intersection":
+                    if match_type == "intersection" and results:
                         merged_df = results[0]
                         for df in results[1:]:
                             merged_df = pd.merge(
@@ -947,7 +942,6 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                         if merged_df.empty:
                             st.info("⚠️ No parts matched all selected criteria.")
                         else:
-                            # ✅ Drop SORT_VALUE again just in case
                             if "SORT_VALUE" in merged_df.columns:
                                 merged_df = merged_df.drop(columns=["SORT_VALUE"])
 
@@ -959,11 +953,10 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                             )
                             st.dataframe(merged_df)
 
-                    else:  # union
+                    elif match_type == "union" and results:
                         combined_df = pd.concat(results, ignore_index=True)
                         combined_df = combined_df.drop_duplicates(subset="PART_NUMBER")
 
-                        # ✅ Drop SORT_VALUE from union result
                         if "SORT_VALUE" in combined_df.columns:
                             combined_df = combined_df.drop(columns=["SORT_VALUE"])
 
