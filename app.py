@@ -16,9 +16,11 @@ from gpt_functions import (
     apply_universal_filters,
     smart_filter_rank_summary,
     get_root_cause_explanation,
+    get_parameter_recommendations,
     late_orders_function_spec,
     smart_filter_rank_function_spec,
     root_cause_explanation_spec,
+    parameter_recommendation_spec,
     all_function_specs,
 )
 
@@ -336,10 +338,23 @@ if uploaded_file:
         ]
         combined_lt_df = combined_lt_df.join(avg_po_lt).join(avg_wo_lt).join(lt_counts)
 
-        combined_lt_df["COMBINED_LT"] = (
-            (combined_lt_df["AVG_PO_LEAD_TIME"] * combined_lt_df["PO_COUNT"])
-            + (combined_lt_df["AVG_WO_LEAD_TIME"] * combined_lt_df["WO_COUNT"])
-        ) / combined_lt_df["TOTAL_COUNT"].replace(0, np.nan)
+        po_numerator = (
+            combined_lt_df["AVG_PO_LEAD_TIME"].fillna(0) * combined_lt_df["PO_COUNT"]
+        )
+        wo_numerator = (
+            combined_lt_df["AVG_WO_LEAD_TIME"].fillna(0) * combined_lt_df["WO_COUNT"]
+        )
+
+        po_valid = combined_lt_df["AVG_PO_LEAD_TIME"].notnull()
+        wo_valid = combined_lt_df["AVG_WO_LEAD_TIME"].notnull()
+
+        valid_total = combined_lt_df["PO_COUNT"].where(po_valid, 0) + combined_lt_df[
+            "WO_COUNT"
+        ].where(wo_valid, 0)
+
+        combined_lt_df["IDEAL_LEAD_TIME"] = (
+            po_numerator + wo_numerator
+        ) / valid_total.replace(0, np.nan)
 
         # Step 4: Accuracy % vs ERP
         combined_lt_df["PO_LT_ACCURACY_PCT"] = np.where(
@@ -366,11 +381,13 @@ if uploaded_file:
             np.nan,
         )
 
-        combined_lt_df["COMBINED_LT_ACCURACY_PCT"] = np.where(
-            combined_lt_df["COMBINED_LT"].notna(),
+        combined_lt_df["IDEAL_LT_ACCURACY_PCT"] = np.where(
+            combined_lt_df["IDEAL_LEAD_TIME"].notna(),
             (
                 1
-                - abs(combined_lt_df["COMBINED_LT"] - combined_lt_df["ERP_LEAD_TIME"])
+                - abs(
+                    combined_lt_df["IDEAL_LEAD_TIME"] - combined_lt_df["ERP_LEAD_TIME"]
+                )
                 / combined_lt_df["ERP_LEAD_TIME"]
             ),
             np.nan,
@@ -385,9 +402,9 @@ if uploaded_file:
             combined_lt_df["WO_LT_ACCURACY_PCT"] >= 1 - lt_tolerance_pct
         ).mask(combined_lt_df["WO_LT_ACCURACY_PCT"].isna())
 
-        combined_lt_df["COMBINED_LT_ACCURATE"] = (
-            combined_lt_df["COMBINED_LT_ACCURACY_PCT"] >= 1 - lt_tolerance_pct
-        ).mask(combined_lt_df["COMBINED_LT_ACCURACY_PCT"].isna())
+        combined_lt_df["IDEAL_LT_ACCURATE"] = (
+            combined_lt_df["IDEAL_LT_ACCURACY_PCT"] >= 1 - lt_tolerance_pct
+        ).mask(combined_lt_df["IDEAL_LT_ACCURACY_PCT"].isna())
 
         # Step 6: Push part-level metrics to WHY table
         why_df = part_master_df.copy().set_index("PART_ID")
@@ -396,13 +413,13 @@ if uploaded_file:
                 [
                     "AVG_PO_LEAD_TIME",
                     "AVG_WO_LEAD_TIME",
-                    "COMBINED_LT",
+                    "IDEAL_LEAD_TIME",
                     "PO_LT_ACCURACY_PCT",
                     "WO_LT_ACCURACY_PCT",
-                    "COMBINED_LT_ACCURACY_PCT",
+                    "IDEAL_LT_ACCURACY_PCT",
                     "PO_LEAD_TIME_ACCURATE",
                     "WO_LEAD_TIME_ACCURATE",
-                    "COMBINED_LT_ACCURATE",
+                    "IDEAL_LT_ACCURATE",
                 ]
             ]
         )
@@ -488,13 +505,13 @@ if uploaded_file:
                 [
                     "AVG_PO_LEAD_TIME",
                     "AVG_WO_LEAD_TIME",
-                    "COMBINED_LT",
+                    "IDEAL_LEAD_TIME",
                     "PO_LT_ACCURACY_PCT",
                     "WO_LT_ACCURACY_PCT",
-                    "COMBINED_LT_ACCURACY_PCT",
+                    "IDEAL_LT_ACCURACY_PCT",
                     "PO_LEAD_TIME_ACCURATE",
                     "WO_LEAD_TIME_ACCURATE",
-                    "COMBINED_LT_ACCURATE",
+                    "IDEAL_LT_ACCURATE",
                     "PO_COUNT",
                     "WO_COUNT",
                     "TOTAL_COUNT",
@@ -515,8 +532,8 @@ if uploaded_file:
             "AVG_PO_LEAD_TIME",
             "AVG_WO_LEAD_TIME",
             "AVG_SCRAP_RATE",
-            "COMBINED_LT",
-            "COMBINED_LT_ACCURACY_PCT",
+            "IDEAL_LEAD_TIME",
+            "IDEAL_LT_ACCURACY_PCT",
             "PO_LT_ACCURACY_PCT",
             "WO_LT_ACCURACY_PCT",
             "WO_COUNT",
@@ -684,21 +701,25 @@ if uploaded_file:
             "LATE_MRP_NEED_QTY": "Total quantity of demand covered by late POs, late WOs, or MRP suggestions within lead time. Represents unfulfilled or misaligned supply.",
             "SHORTAGE_QTY": "The numeric quantity by which a part is short, based on its planning method. For ROP/Min/Max parts, this is Ideal Min - On Hand. For MRP parts, this is Late MRP Need - On Hand.",
             "EXCESS_QTY": "The numeric quantity of excess inventory. For ROP/MinMax, it's On Hand - Ideal Max. For MRP, it's On Hand - Late MRP Need.",
-            "EOQ": "The statistically calculated Economic Order Quantity for the part, based on trailing consumption, ordering cost, and holding cost.",
-            "INVENTORY_TURNS": "Measures how quickly inventory is consumed, calculated as trailing consumption divided by on-hand inventory.",
             "STD_DEV_CONSUMPTION": "Standard deviation of daily consumption used in ideal SS calculation.",
             "PO_LT_ACCURACY_PCT": "Percent deviation between average actual PO lead time and ERP lead time.",
             "WO_LT_ACCURACY_PCT": "Percent deviation between average actual WO lead time and ERP lead time.",
-            "COMBINED_LT": "Weighted average lead time across PO and WO orders, weighted by order volume.",
-            "COMBINED_LT_ACCURATE": "Flag indicating if the combined LT is within the allowed tolerance of ERP LT.",
-            "COMBINED_LT_ACCURACY_PCT": "Percent deviation between combined LT and ERP LT.",
+            "IDEAL_LEAD_TIME": "Weighted average lead time across PO and WO orders, weighted by order volume.",
+            "IDEAL_LT_ACCURATE": "Flag indicating if the combined LT is within the allowed tolerance of ERP LT.",
+            "IDEAL_LT_ACCURACY_PCT": "Percent deviation between combined LT and ERP LT.",
             "HIGH_SCRAP_PART": "Flag indicating whether the part's scrap rate exceeds the defined high scrap threshold.",
             "SCRAP_DENOMINATOR": "Total quantity used in the scrap rate denominator (scrap + valid consumption).",
+            "PO_COUNT": "Number of closed Purchase Orders used in lead time analysis",
+            "WO_COUNT": "Number of closed Work Orders used in lead time analysis",
+            "TOTAL_COUNT": "Total number of closed orders (POs + WOs) used for ideal lead time calculation",
+            "START_DATE": "Actual start date for the order (used to calculate actual lead time)",
+            "LATE_MRP_NEED_QTY": "Total demand quantity considered late, including POs, WOs, and MRP messages within lead time window",
         }
 
     # Cache dictionary for AI agent access
     column_definitions = define_column_dictionary()
     st.session_state["column_definitions"] = column_definitions
+
     # NOW insert the function calls here:
     what_part_detail_df, shortage_percent, excess_percent, avg_turns = (
         calculate_what_metrics(
@@ -786,7 +807,7 @@ if uploaded_file:
     )
     col5.metric(
         "📊 Combined LT Accuracy",
-        f"{(why_part_detail_df['COMBINED_LT_ACCURATE'].dropna().mean() * 100):.1f}%",
+        f"{(why_part_detail_df['IDEAL_LT_ACCURATE'].dropna().mean() * 100):.1f}%",
     )
     col6.metric(
         "📈 % Parts w/ Ideal Safety Stock",
@@ -816,9 +837,9 @@ if uploaded_file:
                     "WO_LT_ACCURACY_PCT",
                     "AVG_WO_LEAD_TIME",
                     "AVG_PO_LEAD_TIME",
-                    "COMBINED_LT",
-                    "COMBINED_LT_ACCURATE",
-                    "COMBINED_LT_ACCURACY_PCT",
+                    "IDEAL_LEAD_TIME",
+                    "IDEAL_LT_ACCURATE",
+                    "IDEAL_LT_ACCURACY_PCT",
                     "AVG_SCRAP_RATE",
                     "HIGH_SCRAP_PART",
                 ]
@@ -921,13 +942,16 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                             "No tabular results returned from any matched function."
                         )
 
-                elif len(results) == 1:
-                    st.dataframe(results[0])  # ✅ already cleaned above
+                # Render result(s)
+                dataframes = [r for r in results if isinstance(r, pd.DataFrame)]
 
-                else:
-                    if match_type == "intersection" and results:
-                        merged_df = results[0]
-                        for df in results[1:]:
+                if len(dataframes) == 1:
+                    st.dataframe(dataframes[0])
+
+                elif len(dataframes) > 1:
+                    if match_type == "intersection":
+                        merged_df = dataframes[0]
+                        for df in dataframes[1:]:
                             merged_df = pd.merge(
                                 merged_df,
                                 df,
@@ -946,22 +970,22 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                                 merged_df = merged_df.drop(columns=["SORT_VALUE"])
 
                             st.info(
-                                f"📘 Merge Type: INTERSECTION — showing parts that meet all {len(results)} criteria."
+                                f"📘 Merge Type: INTERSECTION — showing parts that meet all {len(dataframes)} criteria."
                             )
                             st.success(
-                                f"✅ {len(merged_df)} parts matched all criteria across {len(results)} functions."
+                                f"✅ {len(merged_df)} parts matched all criteria across {len(dataframes)} functions."
                             )
                             st.dataframe(merged_df)
 
-                    elif match_type == "union" and results:
-                        combined_df = pd.concat(results, ignore_index=True)
+                    else:  # UNION
+                        combined_df = pd.concat(dataframes, ignore_index=True)
                         combined_df = combined_df.drop_duplicates(subset="PART_NUMBER")
 
                         if "SORT_VALUE" in combined_df.columns:
                             combined_df = combined_df.drop(columns=["SORT_VALUE"])
 
                         st.info(
-                            f"📘 Merge Type: UNION — showing all parts that met at least one of the {len(results)} criteria."
+                            f"📘 Merge Type: UNION — showing all parts that met at least one of the {len(dataframes)} criteria."
                         )
                         st.success(
                             f"✅ {len(combined_df)} unique parts matched at least one of the selected metrics."

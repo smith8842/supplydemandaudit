@@ -17,18 +17,18 @@ column_metadata = {
     "IS_LATE": "bool",
     "PO_LEAD_TIME_ACCURATE": "bool",
     "WO_LEAD_TIME_ACCURATE": "bool",
-    "COMBINED_LT_ACCURATE": "bool",
+    "IDEAL_LT_ACCURATE": "bool",
     # Numeric fields
     "SHORTAGE_QTY": "numeric",
     "EXCESS_QTY": "numeric",
     "INVENTORY_TURNS": "numeric",
     "AVG_SCRAP_RATE": "numeric",
-    "COMBINED_LT_ACCURACY_PCT": "numeric",
+    "IDEAL_LT_ACCURACY_PCT": "numeric",
     "PO_LT_ACCURACY_PCT": "numeric",
     "WO_LT_ACCURACY_PCT": "numeric",
     "AVG_PO_LEAD_TIME": "numeric",
     "AVG_WO_LEAD_TIME": "numeric",
-    "COMBINED_LT": "numeric",
+    "IDEAL_LEAD_TIME": "numeric",
     "ERP_LEAD_TIME": "numeric",
     "AVG_LEAD_TIME": "numeric",
     "SS_DEVIATION_PCT": "numeric",
@@ -71,19 +71,19 @@ column_list = {
         "IS_LATE",
         "PO_LEAD_TIME_ACCURATE",
         "WO_LEAD_TIME_ACCURATE",
-        "COMBINED_LT_ACCURATE",
+        "IDEAL_LT_ACCURATE",
     ],
     "numeric_columns": [
         "SHORTAGE_QTY",
         "EXCESS_QTY",
         "INVENTORY_TURNS",
         "AVG_SCRAP_RATE",
-        "COMBINED_LT_ACCURACY_PCT",
+        "IDEAL_LT_ACCURACY_PCT",
         "PO_LT_ACCURACY_PCT",
         "WO_LT_ACCURACY_PCT",
         "AVG_PO_LEAD_TIME",
         "AVG_WO_LEAD_TIME",
-        "COMBINED_LT",
+        "IDEAL_LEAD_TIME",
         "ERP_LEAD_TIME",
         "AVG_LEAD_TIME",
         "SS_DEVIATION_PCT",
@@ -129,43 +129,32 @@ column_list_text = (
 # GPT Callable Metric Functions
 # ----------------------------------------
 
+
 # --------- Universal Filters --------------
-
-
 def apply_universal_filters(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
-
-    # Display only non-null filter values
+    """
+    Applies all keyword filters to matching dataframe columns (case-insensitive).
+    Supports all fields that exist in the dataframe, including booleans.
+    """
     non_null_filters = {k: v for k, v in kwargs.items() if v is not None}
     st.info(f"🌐 Universal filters applied:\n{json.dumps(non_null_filters)}")
 
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    for k, v in non_null_filters.items():
+        # Case-insensitive column match
+        matching_cols = [col for col in df.columns if col.upper() == k.upper()]
+        if not matching_cols:
+            continue  # Skip unknown fields
+        col = matching_cols[0]
 
-    # PART_NUMBER
-    if "part_number" in kwargs and "PART_NUMBER" in df.columns:
-        df = df[df["PART_NUMBER"] == kwargs["part_number"]]
+        # Normalize boolean filter values (handle string "true"/"false")
+        if column_metadata.get(col) == "bool":
+            if isinstance(v, str):
+                v = v.strip().lower() == "true"
+            elif isinstance(v, dict):
+                # Handle GPT cases like {"value": true}
+                v = list(v.values())[0]
 
-    # PLANNING_METHOD
-    if "planning_method" in kwargs and "PLANNING_METHOD" in df.columns:
-        pm = kwargs["planning_method"]
-        if isinstance(pm, dict):
-            pm = list(pm.values())
-        elif isinstance(pm, str):
-            pm = [pm]
-        df = df[df["PLANNING_METHOD"].isin(pm)]
-
-    # COMPLIANT ONLY
-    if kwargs.get("compliant_only") and "SS_COMPLIANT_PART" in df.columns:
-        df = df[df["SS_COMPLIANT_PART"] == True]
-
-    # HIGH ONLY
-    if kwargs.get("high_only") and "HIGH_SCRAP_PART" in df.columns:
-        df = df[df["HIGH_SCRAP_PART"] == True]
-
-    # PLACEHOLDER FIELDS
-    for field in ["planner", "buyer", "supplier", "make_or_buy", "commodity"]:
-        col = field.upper()
-        if field in kwargs and col in df.columns:
-            df = df[df[col] == kwargs[field]]
+        df = df[df[col] == v]
 
     return df
 
@@ -286,33 +275,34 @@ def detect_functions_from_prompt(prompt: str):
     Each function provides a specific type of supply or demand insight — such as shortages, excess inventory, scrap rates, safety stock accuracy, or lead time issues. Users may ask vague or compound questions. Handle these cases by:
     
     1. Matching every function that reasonably applies.
-    2. If the user asks **why** something is happening, or what is **causing** a problem (e.g., “why are there so many excess parts,” “what’s causing our low inventory turns”), match `get_root_cause_explanation`.
-    3. If the user ask for more details or data about certain PARTS, match the 'smart_filter_rank_summary' function.
-    4. If the user ask for more details or data about certain ORDERS, match the 'smart_filter_rank_summary' function.
-    5. Extracting relevant arguments like part_number, order_type, top_n, planner, planning_method, or accuracy_filter when mentioned.
-    6. Assuming defaults when needed (e.g. if part_number is not specified, return top rows).
-    7. Supporting logical operators (AND/OR). If the user asks about multiple concerns, match all applicable functions.
-    8. If the user mentions any filtering criteria (e.g., "ROP", "planner = David", "only shortages", "just POs"), place those inside a `filters` dictionary:
+    2. If the user is trying to diagnose a problem and asks **why** something is happening, or what is **causing** a problem (e.g., “why are there so many excess parts,” “what’s causing our low inventory turns”), match `get_root_cause_explanation`.
+    3. If the user asks for recommendations on how to change parameters, or suggestions of new values for parameters, then match 'get_parameter_recommendations.' If the user asks *what* needs to change, that is likely either 'get_root_cause_explanation' or 'smart_filter_summary' depending on other prompt language, NOT 'get_parameter_recommendation'.
+    4. If the user ask for more details or data about certain PARTS, match the 'smart_filter_rank_summary' function.
+    5. If the user ask for more details or data about certain ORDERS, match the 'smart_filter_rank_summary' function.
+    6. Extracting relevant arguments like part_number, order_type, top_n, planner, planning_method, or accuracy_filter when mentioned.
+    7. Assuming defaults when needed (e.g. if part_number is not specified, return top rows).
+    8. Supporting logical operators (AND/OR). If the user asks about multiple concerns, match all applicable functions.
+    89. If the user mentions any filtering criteria (e.g., "ROP", "planner = David", "only shortages", "just POs"), place those inside a `filters` dictionary:
         Example: 
         "filters": {
             "PLANNING_METHOD": "ROP",
             "PLANNER": "David",
             "SHORTAGE_YN": true
         }
-    9. If the user prompt suggests ranking or ordering (e.g., "top 5", "worst shortages", "best accuracy"), include a `sort` dictionary:
+    10. If the user prompt suggests ranking or ordering (e.g., "top 5", "worst shortages", "best accuracy"), include a `sort` dictionary:
         Example:
         "sort": {
             "field": "SS_DEVIATION_PCT",
             "ascending": false
         }
-    10. Only assign numeric columns to the `sort.field` value — like SHORTAGE_QTY, AVG_SCRAP_RATE, INVENTORY_TURNS, etc.
-    11. Do NOT assign boolean fields like SHORTAGE_YN or EXCESS_YN to the sort field. These can only be used in the `filters` dictionary.
-    12. Interpret ranking language:
+    11. Only assign numeric columns to the `sort.field` value — like SHORTAGE_QTY, AVG_SCRAP_RATE, INVENTORY_TURNS, etc.
+    12. Do NOT assign boolean fields like SHORTAGE_YN or EXCESS_YN to the sort field. These can only be used in the `filters` dictionary.
+    13. Interpret ranking language:
         - "best", "highest", "top", "most" → ascending = false
         - "worst", "lowest", "bottom", "least" → ascending = true
-    13. There are certain fields where ranking language would have an inverse rank order. Currently those including Shortages, Excess, Safety Stock Deviations, Scrap Rates, and Days Late. For example - the worst safety stock deviation would be "ascending = false"
-    14. If the user adds ranking language in conjunction with terms that you intepret as a column (like the phrase "worst shortages"), then the user is looking for a sort and ranking on the SHORTAGE_QTY field, not a filter on the SHORTAGE_YN field.
-    15. The get_late_orders_summary function is looking at data about orders. So, it should only ever be chosen if the user asks for order-centric data. For example, "Show me all late orders." But something like "show me all parts with late orders," the prompt is asking for part-centric data.
+    14. There are certain fields where ranking language would have an inverse rank order. Currently those including Shortages, Excess, Safety Stock Deviations, Scrap Rates, and Days Late. For example - the worst safety stock deviation would be "ascending = false"
+    15. If the user adds ranking language in conjunction with terms that you intepret as a column (like the phrase "worst shortages"), then the user is looking for a sort and ranking on the SHORTAGE_QTY field, not a filter on the SHORTAGE_YN field.
+    16. The get_late_orders_summary function is looking at data about orders. So, it should only ever be chosen if the user asks for order-centric data. For example, "Show me all late orders." But something like "show me all parts with late orders," the prompt is asking for part-centric data.
     You MUST return a valid JSON dictionary in the following format:
     {
       "functions": [
@@ -340,9 +330,14 @@ def detect_functions_from_prompt(prompt: str):
     }
     """.strip()
 
+    column_descriptions = json.dumps(
+        st.session_state.get("column_definitions", {}), indent=2
+    )
+
     user_prompt = (
         f"Available functions:\n{function_descriptions}\n\n"
         f"{column_list_text}\n\n"
+        f"Column meanings:\n{column_descriptions}\n\n"
         f"User prompt:\n{prompt}\n\n"
         "Return a JSON dictionary with keys 'functions' and 'match_type'."
     )
@@ -363,9 +358,15 @@ def detect_functions_from_prompt(prompt: str):
         raw = raw.strip("`").strip("json").strip()
 
     try:
+        st.write("🧾 Raw GPT function parse output:", raw)
         parsed = json.loads(raw)
         functions = parsed.get("functions", [])
         match_type = parsed.get("match_type", "intersection").lower()
+
+        # Store filters in session state to inject into all matched functions
+        first_func_args = functions[0]["arguments"] if functions else {}
+        st.session_state["last_detected_filters"] = first_func_args.get("filters", {})
+
         return functions, match_type
     except Exception as e:
         print(f"⚠️ Failed to parse GPT response: {e}")
@@ -381,15 +382,10 @@ def route_gpt_function_call(name: str, args: dict):
     Filters args based on function signature.
     """
     router = {
-        # "get_material_shortage_summary": get_material_shortage_summary,
-        # "get_excess_inventory_summary": get_excess_inventory_summary,
-        # "get_inventory_turns_summary": get_inventory_turns_summary,
-        # "get_scrap_rate_summary": get_scrap_rate_summary,
-        # "get_lead_time_accuracy_summary": get_lead_time_accuracy_summary,
-        # "get_ss_accuracy_summary": get_ss_accuracy_summary,
         "get_late_orders_summary": get_late_orders_summary,
         "smart_filter_rank_summary": smart_filter_rank_summary,
         "get_root_cause_explanation": get_root_cause_explanation,
+        "get_parameter_recommendations": get_parameter_recommendations,
     }
 
     if name not in router:
@@ -403,7 +399,20 @@ def route_gpt_function_call(name: str, args: dict):
     import inspect
 
     sig = inspect.signature(fn)
-    accepted_args = {k: v for k, v in args.items() if k in sig.parameters}
+    accepted_args = {}
+
+    # Global filters from last GPT parse (shared across all matched functions)
+    shared_filters = st.session_state.get("last_detected_filters", {})
+
+    st.write("🌐 Shared filters available to all functions:", shared_filters)
+
+    for k, v in args.items():
+        if k in sig.parameters:
+            accepted_args[k] = v
+
+    # Always pass filters if supported by the function
+    if "filters" in sig.parameters:
+        accepted_args["filters"] = accepted_args.get("filters", shared_filters)
 
     # Inject user_prompt if the function expects it and it's missing
     if "user_prompt" in sig.parameters and "user_prompt" not in accepted_args:
@@ -533,8 +542,9 @@ def get_root_cause_explanation(
 
     # Apply universal filters to both part-level and order-level data
     args = {"part_number": part_number}
-    if filters:
-        args.update(filters)
+    args.update(filters or {})  # Expand filters into args
+
+    st.write("📥 Merged filters in get_root_cause_explanation:", args)
 
     part_df = apply_universal_filters(part_df, **args)
     orders_df = apply_universal_filters(orders_df, **args)
@@ -574,9 +584,9 @@ def get_root_cause_explanation(
         "WO_LT_ACCURACY_PCT",
         "AVG_WO_LEAD_TIME",
         "WO_COUNT",
-        "COMBINED_LT_ACCURATE",
-        "COMBINED_LT_ACCURACY_PCT",
-        "COMBINED_LT",
+        "IDEAL_LT_ACCURATE",
+        "IDEAL_LT_ACCURACY_PCT",
+        "IDEAL_LEAD_TIME",
         "ERP_LEAD_TIME",
         "INVENTORY_TURNS",
     ]
@@ -621,6 +631,142 @@ def get_root_cause_explanation(
 
     Order-level sample:
     {orders_markdown}
+    """
+
+    client = OpenAIClient(api_key=openai_api_key)
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.3,
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+# --------- Parameter Recommendation -------------
+def get_parameter_recommendations(
+    user_prompt: str, part_number: str = None, filters: dict = None
+) -> str:
+    """
+    GPT-callable: Suggests planning parameter changes (SS, LT, Min/Max, Planning Method, etc.) using audit data.
+    Applies accuracy filters in Python, and delegates reasoning and explanation to GPT.
+    """
+    df = st.session_state.get("combined_part_detail_df", pd.DataFrame())
+    if df.empty:
+        return "No part-level audit data available to generate parameter suggestions."
+
+    args = {"part_number": part_number}
+    args.update(filters or {})  # Merge filters into args dict
+
+    st.write("📥 Merged filters in get_parameter_recommendations:", args)
+
+    df = apply_universal_filters(df, **args)
+
+    if df.empty:
+        return "No matching part data found for parameter recommendation."
+
+    # Map GPT-triggered keywords to parameter columns
+    focus_fields = {
+        "LEAD_TIME": ["lead time"],
+        "SAFETY_STOCK": ["safety stock", "ss"],
+        "MIN_QTY": ["min"],
+        "MAX_QTY": ["max"],
+        "REORDER_POINT": ["reorder point", "rop"],
+        "PLANNING_METHOD": ["planning method"],
+    }
+
+    user_lower = user_prompt.lower()
+    requested_fields = [
+        f
+        for f, triggers in focus_fields.items()
+        if any(t in user_lower for t in triggers)
+    ]
+
+    if not requested_fields:
+        requested_fields = list(focus_fields.keys())
+
+    # Define mapping and accuracy filters
+    column_pairs = {
+        "LEAD_TIME": ("LEAD_TIME", "IDEAL_LEAD_TIME"),
+        "SAFETY_STOCK": ("SAFETY_STOCK", "IDEAL_SS"),
+        "MIN_QTY": ("MIN_QTY", "IDEAL_MINIMUM"),
+        "MAX_QTY": ("MAX_QTY", "IDEAL_MAXIMUM"),
+        "REORDER_POINT": ("REORDER_POINT", "IDEAL_MINIMUM"),
+        "PLANNING_METHOD": ("PLANNING_METHOD", "IDEAL_PLANNING_METHOD"),
+    }
+    accuracy_flags = {
+        "LEAD_TIME": "IDEAL_LT_ACCURATE",
+        "SAFETY_STOCK": "SS_COMPLIANT_PART",
+    }
+
+    # Build long-form filtered table
+    rows = []
+    for _, row in df.iterrows():
+        for param in requested_fields:
+            if param not in column_pairs:
+                continue
+
+            current_field, ideal_field = column_pairs[param]
+            if current_field not in df.columns or ideal_field not in df.columns:
+                continue
+
+            # Enforce accuracy-based filters
+            if param in accuracy_flags:
+                flag_col = accuracy_flags[param]
+                if (
+                    flag_col not in row
+                    or row[flag_col] is True
+                    or pd.isna(row[flag_col])
+                ):
+                    continue
+
+            current_value = row.get(current_field, None)
+            ideal_value = row.get(ideal_field, None)
+
+            # Must have valid values
+            if pd.isna(current_value) or pd.isna(ideal_value):
+                continue
+
+            # Reject boolean or None
+            if isinstance(ideal_value, bool) or ideal_value is None:
+                continue
+
+            rows.append(
+                {
+                    "PART_NUMBER": row["PART_NUMBER"],
+                    "PARAMETER": param,
+                    "CURRENT_VALUE": current_value,
+                    "RECOMMENDED_VALUE": ideal_value,
+                }
+            )
+
+    if not rows:
+        return "No suggested parameter updates based on the accuracy flags and current data."
+
+    gpt_df = pd.DataFrame(rows)
+
+    table_md = gpt_df.to_markdown(index=False)
+
+    system_msg = """
+    You are a supply chain planning assistant helping a planner identify which parameters need to be updated.
+
+    The table provided shows only parts and parameters that are flagged for update, based on pre-calculated audit flags.
+    Simply confirm the CURRENT and RECOMMENDED values and provide helpful context in your explanation.
+
+    Rules:
+    - Do not second guess whether a change is needed. The logic has already filtered the list.
+    - Display a markdown table with: PART_NUMBER, PARAMETER, CURRENT_VALUE, RECOMMENDED_VALUE
+    - Then summarize why these changes are being recommended and what patterns you observe.
+    """.strip()
+
+    user_msg = f"""
+    User request: {user_prompt}
+
+    Recommended parameter updates:
+    {table_md}
     """
 
     client = OpenAIClient(api_key=openai_api_key)
@@ -775,10 +921,42 @@ root_cause_explanation_spec = {
     },
 }
 
+# --------- Parameter Recommendation Spec -----------
+
+parameter_recommendation_spec = {
+    "name": "get_parameter_recommendations",
+    "description": (
+        "Suggests planning parameter changes such as safety stock, lead time, reorder point, and planning method. "
+        "Uses existing audit metrics and IDEAL_ values to determine which parameters should be adjusted. "
+        "Useful for prompts like 'What should my SS for PN001 be?' or 'Which parts need planning method changes?'"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_prompt": {
+                "type": "string",
+                "description": "The user's original question to guide GPT's parameter logic.",
+            },
+            "part_number": {
+                "type": "string",
+                "description": "Optional specific part number to evaluate.",
+            },
+            "filters": {
+                "type": "object",
+                "description": "Optional dictionary of filters to narrow the scope (e.g., planning method = ROP, shortage = true).",
+                "additionalProperties": {"type": ["string", "number", "boolean"]},
+            },
+        },
+        "required": ["user_prompt"],
+    },
+}
+
+
 # --------- Combined Functional Spec ------------
 
 all_function_specs = [
     late_orders_function_spec,
     smart_filter_rank_function_spec,
     root_cause_explanation_spec,
+    parameter_recommendation_spec,
 ]
