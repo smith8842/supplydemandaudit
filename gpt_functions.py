@@ -137,7 +137,7 @@ def apply_universal_filters(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
     Supports all fields that exist in the dataframe, including booleans.
     """
     non_null_filters = {k: v for k, v in kwargs.items() if v is not None}
-    st.info(f"🌐 Universal filters applied:\n{json.dumps(non_null_filters)}")
+    ##st.info(f"🌐 Universal filters applied:\n{json.dumps(non_null_filters)}")
 
     for k, v in non_null_filters.items():
         # Case-insensitive column match
@@ -358,7 +358,7 @@ def detect_functions_from_prompt(prompt: str):
         raw = raw.strip("`").strip("json").strip()
 
     try:
-        st.write("🧾 Raw GPT function parse output:", raw)
+        ##st.write("🧾 Raw GPT function parse output:", raw)
         parsed = json.loads(raw)
         functions = parsed.get("functions", [])
         match_type = parsed.get("match_type", "intersection").lower()
@@ -391,7 +391,7 @@ def route_gpt_function_call(name: str, args: dict):
     if name not in router:
         return f"⚠️ No matching function found for: {name}"
 
-    st.write("🧠 GPT raw function name + args:", name, args)
+    # st.write("🧠 GPT raw function name + args:", name, args)
 
     fn = router[name]
 
@@ -404,7 +404,7 @@ def route_gpt_function_call(name: str, args: dict):
     # Global filters from last GPT parse (shared across all matched functions)
     shared_filters = st.session_state.get("last_detected_filters", {})
 
-    st.write("🌐 Shared filters available to all functions:", shared_filters)
+    # st.write("🌐 Shared filters available to all functions:", shared_filters)
 
     for k, v in args.items():
         if k in sig.parameters:
@@ -418,16 +418,16 @@ def route_gpt_function_call(name: str, args: dict):
     if "user_prompt" in sig.parameters and "user_prompt" not in accepted_args:
         accepted_args["user_prompt"] = st.session_state.get("last_user_prompt", "")
 
-    st.write("📦 Final accepted args to function:", accepted_args)
+    ##st.write("📦 Final accepted args to function:", accepted_args)
 
     # 👇 Debug display in UI
     import json
 
-    st.info(
-        "🔍 Function `{}` called with parameters:\n\n{}".format(
-            name, json.dumps(accepted_args, indent=2)
-        )
-    )
+    # st.info(
+    #     "🔍 Function `{}` called with parameters:\n\n{}".format(
+    #         name, json.dumps(accepted_args, indent=2)
+    #     )
+    # )
 
     return fn(**accepted_args)
 
@@ -544,7 +544,7 @@ def get_root_cause_explanation(
     args = {"part_number": part_number}
     args.update(filters or {})  # Expand filters into args
 
-    st.write("📥 Merged filters in get_root_cause_explanation:", args)
+    ##st.write("📥 Merged filters in get_root_cause_explanation:", args)
 
     part_df = apply_universal_filters(part_df, **args)
     orders_df = apply_universal_filters(orders_df, **args)
@@ -617,10 +617,12 @@ def get_root_cause_explanation(
     )
 
     system_msg = """
-    1. You are a supply chain analyst. A planner is asking why a part (or set of parts) is performing poorly — for example, when the user asks for root causes, explanations, biggest issues, most likely problems, reasons for excess inventory or shortages, or general performance concerns.
+    1. You are a supply chain analyst. A planner is asking why a part (or set of parts) is performing poorly/well, or why planning parameters or good/bad  — for example, when the user asks for root causes, explanations, biggest issues, most likely problems, reasons for excess inventory or shortages, or general performance concerns.
     2. Analyze the provided part-level audit metrics and relevant orders. Identify which metrics or signals most likely explain the issue(s). Focus on root causes and call out which problem is most important to fix first. Do not list every field — just the most relevant ones.
     3. There is a general order of operations when approaching planning fixes. Assuming all variables have issues, it tends to be appropriate to first fix how a part is planned (planning method). Then, amongst the other variables, it is important to note that lead time is a factor in almost everything, including calculating things like Safty Stock. So it is important to get that right.
-    4. Keep your response concise, direct, and focused. Avoid unnecessary elaboration or repetition.
+    4. If the user is just asking for greater clarification or explanation of an issue, there is no need to give a step by step "how to fix" solution.
+    5. Keep your response concise, direct, and focused. Avoid unnecessary elaboration or repetition. If the user asks for a specific explanation, don't add 
+    6. Keep your response dedicated to the user's request. For example, if the user asks for why a part has so much excess inventory, keep the response entirely focused on the root causes of excess inventory. If the user asks for what effect bad lead times would have on a part focus entirely on the affects of bad lead times.
     """.strip()
 
     user_msg = f"""
@@ -661,7 +663,7 @@ def get_parameter_recommendations(
     args = {"part_number": part_number}
     args.update(filters or {})  # Merge filters into args dict
 
-    st.write("📥 Merged filters in get_parameter_recommendations:", args)
+    ##st.write("📥 Merged filters in get_parameter_recommendations:", args)
 
     df = apply_universal_filters(df, **args)
 

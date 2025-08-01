@@ -43,35 +43,6 @@ st.markdown("Upload your Oracle-exported Excel file to analyze.")
 #  st.sidebar.markdown("## App Status")
 # st.sidebar.write("Waiting for file upload...")
 
-
-# --- OpenAI API Test Block ---
-if openai_api_key:
-    from openai import OpenAI as OpenAIClient
-
-    st.markdown("---")
-    st.subheader("🧪 OpenAI API Test")
-
-    if st.button("Run Test Query"):
-        try:
-            client = OpenAIClient(
-                api_key=openai_api_key, organization="org-3Va0Uv9V3lCF4EWsBURKlCAG"
-            )
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {
-                        "role": "user",
-                        "content": "What is a safety stock and why is it important?",
-                    },
-                ],
-                temperature=0.5,
-            )
-            st.success("API call succeeded!")
-            st.write(response.choices[0].message.content)
-        except Exception as e:
-            st.error(f"OpenAI API call failed: {e}")
-
 # Define analysis parameters
 trailing_days = 90  # number of days analyzed for consumption in the past
 z_score = 1.65  # corresponds to ~95% service level
@@ -901,8 +872,8 @@ with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
                     for fn in function_names
                 ]
 
-                st.success(f"✅ GPT matched: {', '.join(pretty_names)}")
-                st.info(f"🔗 Merge logic: {match_type.upper()} (based on your prompt)")
+                ##st.success(f"✅ GPT matched: {', '.join(pretty_names)}")
+                ##st.info(f"🔗 Merge logic: {match_type.upper()} (based on your prompt)")
 
                 # Track whether any functions are expected to return tables
                 table_returning_functions = [
