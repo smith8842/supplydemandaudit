@@ -25,6 +25,7 @@ from gpt_functions import (
 )
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
+client = openai.OpenAI(api_key=openai_api_key)
 
 # st.write("✅ App loaded successfully. Waiting for file upload.")
 
@@ -39,9 +40,6 @@ def normalize_numeric_columns(df, cols):
 # Set up page
 st.set_page_config(page_title="SD Audit - All Metrics", layout="wide")
 st.title("📊 SD Audit - Full Supply & Demand Health Audit")
-st.markdown("Upload your Oracle-exported Excel file to analyze.")
-#  st.sidebar.markdown("## App Status")
-# st.sidebar.write("Waiting for file upload...")
 
 # Define analysis parameters
 trailing_days = 90  # number of days analyzed for consumption in the past
@@ -62,13 +60,50 @@ valid_consumption_types = [
     "Manual Issue",
 ]  # WIP transaction types used as valid consumption
 scrap_transaction_type = "Scrap"  # WIP transaction type used to identify scrap
+# Planning method logic thresholds
+high_cv_threshold = 1.0  # CV ≥ this = volatile → MRP
+low_cv_threshold = 0.1  # CV ≤ this = intermittent → MIN_MAX
+low_consumption_threshold = 0.2  # Average daily < this = intermittent
 
-# Upload Excel file
-uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+st.markdown(
+    """
+    <style>
+    .stTabs [data-baseweb="tab"] button {
+        font-size: 1.1rem !important;
+        font-weight: 600 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Initial file upload UI – only shown if no file yet
+if "uploaded_file" not in st.session_state:
+    uploaded_file = st.file_uploader(
+        "Upload Excel File", type=["xlsx"], key="main_upload"
+    )
+    if uploaded_file:
+        st.session_state["uploaded_file"] = uploaded_file
+        st.rerun()
+    st.stop()
+
+uploaded_file = st.session_state["uploaded_file"]
+
+# Create tabs now that file exists
+tab1, tab2, tab_upload = st.tabs(
+    ["📊 Metrics View", "🤖 AI Assistant", "📁 Upload File"]
+)
+
+# Upload tab shows status and reupload
+with tab_upload:
+    st.markdown("### Upload Excel File")
+    st.success("✅ File uploaded successfully")
+    st.write(f"**{uploaded_file.name}** uploaded.")
+    st.file_uploader(
+        "Upload a new file to rerun analysis", type=["xlsx"], key="reupload"
+    )
 
 if uploaded_file:
-    st.success("✅ File uploaded successfully")
-    # st.write("⏳ Processing...")
     # --- Load All Sheets ---
     xls = pd.ExcelFile(uploaded_file)
     part_master_df = pd.read_excel(xls, sheet_name="PART_MASTER")
@@ -382,6 +417,7 @@ if uploaded_file:
         why_df = why_df.join(
             combined_lt_df[
                 [
+                    "ERP_LEAD_TIME",
                     "AVG_PO_LEAD_TIME",
                     "AVG_WO_LEAD_TIME",
                     "IDEAL_LEAD_TIME",
@@ -474,6 +510,7 @@ if uploaded_file:
         why_df = why_df.join(
             combined_lt_df[
                 [
+                    "ERP_LEAD_TIME",
                     "AVG_PO_LEAD_TIME",
                     "AVG_WO_LEAD_TIME",
                     "IDEAL_LEAD_TIME",
@@ -488,6 +525,30 @@ if uploaded_file:
                     "TOTAL_COUNT",
                 ]
             ]
+        )
+
+        # --- Planning Method Appropriateness ---
+
+        # Compute Coefficient of Variation (CV)
+        why_df["CV"] = why_df["STD_DEV_CONSUMPTION"] / why_df["AVG_DAILY_CONSUMPTION"]
+        why_df["CV"] = why_df["CV"].replace([np.inf, -np.inf], np.nan).fillna(0)
+
+        # Recommend ideal planning method
+        def recommend_planning_method(row):
+            cv = row["CV"]
+            avg = row["AVG_DAILY_CONSUMPTION"]
+            if cv >= high_cv_threshold:
+                return "MRP"
+            elif avg < low_consumption_threshold or cv <= low_cv_threshold:
+                return "MIN_MAX"
+            else:
+                return "ROP"
+
+        why_df["IDEAL_PLANNING_METHOD"] = why_df.apply(
+            recommend_planning_method, axis=1
+        )
+        why_df["PLANNING_METHOD_ACCURATE"] = (
+            why_df["PLANNING_METHOD"].str.upper() == why_df["IDEAL_PLANNING_METHOD"]
         )
 
         scrap_rate_df.index = scrap_rate_df.index.astype(why_df.index.dtype)
@@ -512,6 +573,7 @@ if uploaded_file:
             "TOTAL_COUNT",
             "STD_DEV_CONSUMPTION",
             "SCRAP_DENOMINATOR",
+            "CV",
         ]
         why_df = normalize_numeric_columns(why_df, numeric_cols_why)
 
@@ -685,6 +747,8 @@ if uploaded_file:
             "TOTAL_COUNT": "Total number of closed orders (POs + WOs) used for ideal lead time calculation",
             "START_DATE": "Actual start date for the order (used to calculate actual lead time)",
             "LATE_MRP_NEED_QTY": "Total demand quantity considered late, including POs, WOs, and MRP messages within lead time window",
+            "CV": "Coefficient of variation in daily consumption. Calculated as STD_DEV_CONSUMPTION / AVG_DAILY_CONSUMPTION. Used to assess demand volatility and recommend ideal planning method.",
+            "PLANNING_METHOD_ACCURATE": "Whether the actual ERP planning method matches the recommended method based on demand characteristics. Uses coefficient of variation and average daily consumption to recommend MRP, ROP, or Min/Max.",
         }
 
     # Cache dictionary for AI agent access
@@ -707,10 +771,6 @@ if uploaded_file:
     combined_part_detail_df = build_combined_part_df(
         what_part_detail_df, why_part_detail_df
     )
-    # numeric_cols_combined = [] # no new fields being added
-    # combined_part_detail_df = normalize_numeric_columns(
-    #     combined_part_detail_df, numeric_cols_combined
-    # )
 
     st.session_state["combined_part_detail_df"] = combined_part_detail_df
 
@@ -718,250 +778,306 @@ if uploaded_file:
     # ------- UI for Results -----------
     # -----------------------------------
 
-    # --- UI for WHAT Metrics ---
-    st.markdown("📊 WHAT Metrics Results")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🔻 % of Parts with Material Shortages", f"{shortage_percent:.1f}%")
-    col2.metric("📦 % of Parts with Excess Inventory", f"{excess_percent:.1f}%")
-    col3.metric("🔁 Avg Inventory Turns", f"{avg_turns:.1f}")
-
-    with st.expander("📄 Show detailed WHAT part-level table"):
-        st.markdown("### Detailed WHAT Metrics Table")
-        st.dataframe(
-            what_part_detail_df[
-                [
-                    "PART_NUMBER",
-                    "PLANNING_METHOD",
-                    "INVENTORY_TURNS",
-                    "ON_HAND_QUANTITY",
-                    "IDEAL_MINIMUM",
-                    "LATE_MRP_NEED_QTY",
-                    "SHORTAGE_YN",
-                    "SHORTAGE_QTY",
-                    "EXCESS_YN",
-                    "EXCESS_QTY",
-                    "TRAILING_CONSUMPTION",
-                    "AVG_DAILY_CONSUMPTION",
-                    "SAFETY_STOCK",
-                    "MIN_QTY",
-                    "MAX_QTY",
-                    "LEAD_TIME",
-                ]
-            ]
+    # --- UI for Metrics ----
+    with tab1:
+        # Smaller header
+        st.markdown(
+            "<h4 style='margin-bottom: 0.5rem;'>📊 SD Audit Metrics</h4>",
+            unsafe_allow_html=True,
         )
 
-    po_late_pct = (
-        all_orders_df.loc[all_orders_df["ORDER_TYPE"] == "PO", "IS_LATE"]
-        .dropna()
-        .mean()
-        * 100
-    )
-    wo_late_pct = (
-        all_orders_df.loc[all_orders_df["ORDER_TYPE"] == "WO", "IS_LATE"]
-        .dropna()
-        .mean()
-        * 100
-    )
-
-    # --- UI for WHY Metrics ---
-    st.markdown("🔍 WHY Metrics Results")
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-    col1.metric("📦 % Late Purchase Orders", f"{po_late_pct:.1f}%")
-    col2.metric("🏭 % Late Work Orders", f"{wo_late_pct:.1f}%")
-    col3.metric(
-        "📈 PO Lead Time Accuracy",
-        f"{(why_part_detail_df['PO_LEAD_TIME_ACCURATE'].dropna().mean() * 100):.1f}%",
-    )
-    col4.metric(
-        "🛠️ WO Lead Time Accuracy",
-        f"{(why_part_detail_df['WO_LEAD_TIME_ACCURATE'].dropna().mean() * 100):.1f}%",
-    )
-    col5.metric(
-        "📊 Combined LT Accuracy",
-        f"{(why_part_detail_df['IDEAL_LT_ACCURATE'].dropna().mean() * 100):.1f}%",
-    )
-    col6.metric(
-        "📈 % Parts w/ Ideal Safety Stock",
-        f"{(why_part_detail_df['SS_COMPLIANT_PART'].dropna().mean() * 100):.1f}%",
-    )
-    col7.metric(
-        "🧯 % of Parts with High Scrap",
-        f"{(why_part_detail_df['HIGH_SCRAP_PART'].dropna().mean() * 100):.1f}%",
-    )
-
-    with st.expander("📄 Show detailed WHY part-level table"):
-        st.markdown("### Detailed WHY Metrics Table — by Part")
-        st.dataframe(
-            why_part_detail_df.reset_index()[
-                [
-                    "PART_ID",
-                    "PART_NUMBER",
-                    "LEAD_TIME",
-                    "SAFETY_STOCK",
-                    "AVG_DAILY_CONSUMPTION",
-                    "IDEAL_SS",
-                    "SS_DEVIATION_PCT",
-                    "SS_COMPLIANT_PART",
-                    "PO_LEAD_TIME_ACCURATE",
-                    "PO_LT_ACCURACY_PCT",
-                    "WO_LEAD_TIME_ACCURATE",
-                    "WO_LT_ACCURACY_PCT",
-                    "AVG_WO_LEAD_TIME",
-                    "AVG_PO_LEAD_TIME",
-                    "IDEAL_LEAD_TIME",
-                    "IDEAL_LT_ACCURATE",
-                    "IDEAL_LT_ACCURACY_PCT",
-                    "AVG_SCRAP_RATE",
-                    "HIGH_SCRAP_PART",
-                ]
-            ]
+        # Calculate summary metrics
+        po_late_pct = (
+            all_orders_df.loc[all_orders_df["ORDER_TYPE"] == "PO", "IS_LATE"]
+            .dropna()
+            .mean()
+            * 100
+        )
+        wo_late_pct = (
+            all_orders_df.loc[all_orders_df["ORDER_TYPE"] == "WO", "IS_LATE"]
+            .dropna()
+            .mean()
+            * 100
+        )
+        po_lt_acc = why_part_detail_df["PO_LEAD_TIME_ACCURATE"].dropna().mean() * 100
+        wo_lt_acc = why_part_detail_df["WO_LEAD_TIME_ACCURATE"].dropna().mean() * 100
+        combined_lt = why_part_detail_df["IDEAL_LT_ACCURATE"].dropna().mean() * 100
+        ss_compliance = why_part_detail_df["SS_COMPLIANT_PART"].dropna().mean() * 100
+        scrap_rate = why_part_detail_df["HIGH_SCRAP_PART"].dropna().mean() * 100
+        planning_match = (
+            why_part_detail_df["PLANNING_METHOD_ACCURATE"].dropna().mean() * 100
         )
 
-    with st.expander("📄 Show detailed WHY order-level table"):
-        st.markdown("### Detailed WHY Metrics Table — by Order")
-
-        st.dataframe(
-            all_orders_df[
-                [
-                    "ORDER_TYPE",
-                    "ORDER_ID",
-                    "PART_ID",
-                    "PART_NUMBER",
-                    "PLANNING_METHOD",
-                    "QUANTITY",
-                    "NEED_BY_DATE",
-                    "RECEIPT_DATE",
-                    "START_DATE",
-                    "STATUS",
-                    "IS_LATE",
-                    "ACTUAL_LT_DAYS",
-                ]
-            ]
+        # Metric tables
+        topline_df = pd.DataFrame(
+            {
+                "Metric": ["Shortages", "Excess", "Turns"],
+                "Value": [
+                    f"{shortage_percent:.1f}%",
+                    f"{excess_percent:.1f}%",
+                    f"{avg_turns:.1f}",
+                ],
+            }
         )
 
-# -----------------------------
+        methods_orders_df = pd.DataFrame(
+            {
+                "Metric": ["Planning Method", "Ideal SS", "Late POs", "Late WOs"],
+                "Value": [
+                    f"{planning_match:.1f}%",
+                    f"{ss_compliance:.1f}%",
+                    f"{po_late_pct:.1f}%",
+                    f"{wo_late_pct:.1f}%",
+                ],
+            }
+        )
+
+        lt_scrap_df = pd.DataFrame(
+            {
+                "Metric": ["Combined LT", "PO LT Acc", "WO LT Acc", "High Scrap"],
+                "Value": [
+                    f"{combined_lt:.1f}%",
+                    f"{po_lt_acc:.1f}%",
+                    f"{wo_lt_acc:.1f}%",
+                    f"{scrap_rate:.1f}%",
+                ],
+            }
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown(
+                "<h5 style='margin-bottom:0.2rem;'>📌 Top Line</h5>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(topline_df, use_container_width=True, hide_index=True)
+
+        with col2:
+            st.markdown(
+                "<h5 style='margin-bottom:0.2rem;'>🧮 Methods & Orders</h5>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(methods_orders_df, use_container_width=True, hide_index=True)
+
+        with col3:
+            st.markdown(
+                "<h5 style='margin-bottom:0.2rem;'>⏱️ Lead Times & Scrap</h5>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(lt_scrap_df, use_container_width=True, hide_index=True)
+
+        # --- Combined Part Table View ---
+        st.markdown("---")
+        st.markdown("### 🔍 Filter Part Table by Metric")
+
+        # Optional: toggle buttons to change visible columns
+        metric_filter = st.radio(
+            "Choose a metric to focus on:",
+            [
+                "Show All",
+                "Shortages",
+                "Excess",
+                "Safety Stock Issues",
+                "Lead Time Issues",
+                "Scrap",
+                "Planning Method",
+                "Inventory Turns",
+            ],
+            horizontal=True,
+        )
+
+        # Column groups
+        base_cols = ["PART_ID", "PART_NUMBER", "DESCRIPTION"]
+        bool_cols = [
+            c
+            for c in combined_part_detail_df.columns
+            if c.endswith("_YN") or c.endswith("_PART") or c.endswith("_ACCURATE")
+        ]
+        other_cols = [
+            c for c in combined_part_detail_df.columns if c not in base_cols + bool_cols
+        ]
+
+        # Filtered column views per metric
+        column_sets = {
+            "Show All": base_cols + bool_cols + other_cols,
+            "Shortages": base_cols
+            + [
+                "SHORTAGE_YN",
+                "SHORTAGE_QTY",
+                "PLANNING_METHOD",
+                "ON_HAND_QUANTITY",
+                "IDEAL_MINIMUM",
+                "LATE_MRP_NEED_QTY",
+            ],
+            "Excess": base_cols
+            + [
+                "EXCESS_YN",
+                "EXCESS_QTY",
+                "ON_HAND_QUANTITY",
+                "IDEAL_MAXIMUM",
+                "MAX_QTY",
+            ],
+            "Safety Stock Issues": base_cols
+            + [
+                "SS_COMPLIANT_PART",
+                "SAFETY_STOCK",
+                "IDEAL_SS",
+                "SS_DEVIATION_QTY",
+                "SS_DEVIATION_PCT",
+            ],
+            "Lead Time Issues": base_cols
+            + [
+                "IDEAL_LT_ACCURATE",
+                "ERP_LEAD_TIME",
+                "IDEAL_LEAD_TIME",
+                "IDEAL_LT_ACCURACY_PCT",
+                "PO_COUNT",
+                "WO_COUNT",
+            ],
+            "Scrap": base_cols
+            + ["HIGH_SCRAP_PART", "AVG_SCRAP_RATE", "SCRAP_DENOMINATOR"],
+            "Planning Method": base_cols
+            + [
+                "PLANNING_METHOD_ACCURATE",
+                "PLANNING_METHOD",
+                "IDEAL_PLANNING_METHOD",
+                "MIN_QTY",
+                "MAX_QTY",
+                "IDEAL_MINIMUM",
+                "IDEAL_MAXIMUM",
+                "EOQ",
+                "AVG_DAILY_CONSUMPTION",
+                "STD_DEV_CONSUMPTION",
+                "CV",
+            ],
+            "Inventory Turns": base_cols
+            + [
+                "INVENTORY_TURNS",
+                "TRAILING_CONSUMPTION",
+                "ON_HAND_QUANTITY",
+            ],
+        }
+
+        with st.expander("🧮 Full Part-Level Audit Table", expanded=False):
+            st.dataframe(combined_part_detail_df[column_sets[metric_filter]])
+
+        # --- Order Table View ---
+        with st.expander("📦 Full Order-Level Audit Table", expanded=False):
+            order_base = ["ORDER_ID", "ORDER_TYPE"]
+            order_flags = [c for c in all_orders_df.columns if c.startswith("IS_")]
+            order_rest = [
+                c for c in all_orders_df.columns if c not in order_base + order_flags
+            ]
+            st.dataframe(all_orders_df[order_base + order_flags + order_rest])
+
+    # -----------------------------
+    # ------ GPT Text Blocks ------
+    # -----------------------------
+
+    # ------ Combined Function Text ------------
+
+    # -----------------------------
 # ------ GPT Text Blocks ------
 # -----------------------------
 
-
-friendly_name_map = {
-    "get_late_orders_summary": "Late Orders",
-    "smart_filter_rank_summary": "Filtered & Ranked Summary",
-    "get_root_cause_explanation": "Root Cause Explanation",
-}
-
 # ------ Combined Function Text ------------
 
-with st.expander("💬 Ask GPT: Multi-Metric Supply & Demand Questions"):
-    user_prompt = st.text_input(
-        "Ask a question about shortages, lead time, scrap, safety stock, or late orders:"
-    )
+with tab2:
+    st.subheader("🤖 AI Assistant")
 
-    if st.button("Ask GPT (Multi-Metric)"):
-        try:
-            st.session_state["last_user_prompt"] = user_prompt
-            function_names, match_type = detect_functions_from_prompt(user_prompt)
+    with st.form("gpt_prompt_form", clear_on_submit=False):
+        user_prompt = st.text_input(
+            "Ask a question about shortages, lead time, scrap, safety stock, or late orders:",
+            key="user_prompt_input",
+        )
+        submitted = st.form_submit_button("Ask GPT")
 
-            if not function_names:
-                st.warning(
-                    "GPT did not match your question to any known audit functions."
-                )
-            else:
-                pretty_names = [
-                    friendly_name_map.get(fn.get("name"), fn.get("name"))
-                    for fn in function_names
-                ]
+    if submitted:
+        with st.spinner("Thinking..."):
+            try:
+                st.session_state["last_user_prompt"] = user_prompt
+                function_names, match_type = detect_functions_from_prompt(user_prompt)
 
-                ##st.success(f"✅ GPT matched: {', '.join(pretty_names)}")
-                ##st.info(f"🔗 Merge logic: {match_type.upper()} (based on your prompt)")
-
-                # Track whether any functions are expected to return tables
-                table_returning_functions = [
-                    "smart_filter_rank_summary",
-                    "get_late_orders_summary",
-                    # Add others here as needed
-                ]
-
-                results = []
-                for fn in function_names:
-                    fn_name = fn.get("name")
-                    fn_args = fn.get("arguments", {})
-                    result = route_gpt_function_call(fn_name, fn_args)
-
-                    if isinstance(result, list):
-                        df = pd.DataFrame(result)
-                        if not df.empty:
-                            if "SORT_VALUE" in df.columns:
-                                df = df.drop(columns=["SORT_VALUE"])
-                            results.append(df)
-
-                    elif isinstance(result, str):
-                        st.subheader(f"🧠 GPT Root Cause Explanation for: {fn_name}")
-                        st.markdown(result)
-
-                    else:
-                        st.warning(
-                            f"⚠️ {fn_name} did not return a list or string. Returned: {result}"
-                        )
-
-                # Only show warning if user matched a table-returning function and none returned data
-                matched_fn_names = [fn.get("name") for fn in function_names]
-
-                if any(name in table_returning_functions for name in matched_fn_names):
-                    if all(not isinstance(r, pd.DataFrame) or r.empty for r in results):
-                        st.warning(
-                            "No tabular results returned from any matched function."
-                        )
-
-                # Render result(s)
-                dataframes = [r for r in results if isinstance(r, pd.DataFrame)]
-
-                if len(dataframes) == 1:
-                    st.dataframe(dataframes[0])
-
-                elif len(dataframes) > 1:
-                    if match_type == "intersection":
-                        merged_df = dataframes[0]
-                        for df in dataframes[1:]:
-                            merged_df = pd.merge(
-                                merged_df,
-                                df,
-                                on="PART_NUMBER",
-                                how="inner",
-                                suffixes=("", "_dup"),
-                            )
-                        merged_df = merged_df.loc[
-                            :, ~merged_df.columns.str.endswith("_dup")
+                if not function_names:
+                    st.warning(
+                        "GPT did not match your question to any known audit functions."
+                    )
+                else:
+                    ordered_fn_names = [
+                        fn
+                        for label in [
+                            "get_root_cause_explanation",
+                            "get_parameter_recommendations",
+                            "get_late_orders_summary",
+                            "smart_filter_rank_summary",
                         ]
+                        for fn in function_names
+                        if fn.get("name") == label
+                    ]
 
-                        if merged_df.empty:
-                            st.info("⚠️ No parts matched all selected criteria.")
+                    all_text_blocks = []
+                    all_dataframes = []
+
+                    for fn in ordered_fn_names:
+                        fn_name = fn.get("name")
+                        fn_args = fn.get("arguments", {})
+                        result = route_gpt_function_call(fn_name, fn_args)
+
+                        if isinstance(result, str):
+                            all_text_blocks.append(result)
+
+                        elif isinstance(result, list):
+                            df = pd.DataFrame(result)
+                            if not df.empty:
+                                if "SORT_VALUE" in df.columns:
+                                    df = df.drop(columns=["SORT_VALUE"])
+                                all_dataframes.append((fn_name, df))
+
+                    # Summary Title
+                    try:
+                        summary_prompt = f"Summarize this audit question as a 1 line response title: {user_prompt}"
+                        summary_line = (
+                            client.chat.completions.create(
+                                model="gpt-4",
+                                messages=[{"role": "user", "content": summary_prompt}],
+                            )
+                            .choices[0]
+                            .message.content.strip()
+                        )
+                    except Exception as e:
+                        summary_line = "AI Audit Summary"
+                    st.markdown(f"#### 🧠 {summary_line}")
+
+                    # Unified Text Output (e.g. root cause)
+                    if all_text_blocks:
+                        for block in all_text_blocks:
+                            st.markdown(block)
+
+                    # Unified DataFrame Output
+                    for fn_name, df in all_dataframes:
+                        if fn_name == "get_late_orders_summary":
+                            title = "🧾 Recommended Order Adjustments"
+                        elif fn_name == "smart_filter_rank_summary":
+                            title = "📊 Ranked Summary of Key Issues"
+                        elif fn_name == "get_parameter_recommendations":
+                            title = "📐 Suggested Parameter Changes"
                         else:
-                            if "SORT_VALUE" in merged_df.columns:
-                                merged_df = merged_df.drop(columns=["SORT_VALUE"])
+                            title = "📄 Additional Audit Table"
 
-                            st.info(
-                                f"📘 Merge Type: INTERSECTION — showing parts that meet all {len(dataframes)} criteria."
-                            )
-                            st.success(
-                                f"✅ {len(merged_df)} parts matched all criteria across {len(dataframes)} functions."
-                            )
-                            st.dataframe(merged_df)
+                        st.markdown(f"**{title}**")
+                        st.dataframe(df, use_container_width=True, hide_index=True)
 
-                    else:  # UNION
-                        combined_df = pd.concat(dataframes, ignore_index=True)
-                        combined_df = combined_df.drop_duplicates(subset="PART_NUMBER")
+                    if not all_text_blocks and not all_dataframes:
+                        st.info("GPT responded but returned no usable output.")
 
-                        if "SORT_VALUE" in combined_df.columns:
-                            combined_df = combined_df.drop(columns=["SORT_VALUE"])
+                # ---------------------------
+                # ---- DEBUG (comment out) --
+                # ---------------------------
+                # st.write("Matched functions:", function_names)
+                # st.write("Matched (ordered):", ordered_fn_names)
+                # st.write("User Prompt:", user_prompt)
+                # st.write("Detected Match Type:", match_type)
 
-                        st.info(
-                            f"📘 Merge Type: UNION — showing all parts that met at least one of the {len(dataframes)} criteria."
-                        )
-                        st.success(
-                            f"✅ {len(combined_df)} unique parts matched at least one of the selected metrics."
-                        )
-                        st.dataframe(combined_df)
-
-        except Exception as e:
-            st.error(f"Function match or execution failed: {e}")
+            except Exception as e:
+                st.error(f"Function match or execution failed: {e}")

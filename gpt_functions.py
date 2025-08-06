@@ -476,7 +476,7 @@ def smart_filter_rank_summary(
         k: v for k, v in locals().items() if k not in ["df", "args", "filters", "sort"]
     }
 
-    st.info("🔍 Smart filter args:\n" + json.dumps(args, indent=2))
+    # st.info("🔍 Smart filter args:\n" + json.dumps(args, indent=2))
 
     df = apply_universal_filters(df, **args)
 
@@ -491,7 +491,7 @@ def smart_filter_rank_summary(
 
     # 🧠 Apply dynamic sort fields
     if not sort or "field" not in sort:
-        st.info("ℹ️ No sort field provided — returning unranked filtered results.")
+        # st.info("ℹ️ No sort field provided — returning unranked filtered results.")
         return df.head(top_n).to_dict("records") if top_n else df.to_dict("records")
 
     sort_field = sort["field"]
