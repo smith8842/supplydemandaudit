@@ -39,7 +39,7 @@ def normalize_numeric_columns(df, cols):
 
 # Set up page
 st.set_page_config(page_title="SD Audit - All Metrics", layout="wide")
-st.title("📊 SD Audit - Full Supply & Demand Health Audit")
+st.title("📊 The MRP Refinery - Supply & Demand Health Audit")
 
 # Define analysis parameters
 trailing_days = 90  # number of days analyzed for consumption in the past
@@ -171,6 +171,8 @@ if uploaded_file:
         ss_temp["IDEAL_SS"] = (
             z_score * ss_temp["STD_DEV_CONSUMPTION"] * np.sqrt(ss_temp["LEAD_TIME"])
         )
+        ss_temp["IDEAL_SS"] = ss_temp["IDEAL_SS"].round(0)
+
         what_df = what_df.join(ss_temp["IDEAL_SS"])
 
         # Cutoff Date Calculations
@@ -207,6 +209,10 @@ if uploaded_file:
         )
         what_df["EOQ"] = eoq.fillna(0)
         what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MINIMUM"] + what_df["EOQ"]
+
+        what_df["IDEAL_MINIMUM"] = what_df["IDEAL_MINIMUM"].round(0)
+        what_df["EOQ"] = what_df["EOQ"].round(0)
+        what_df["IDEAL_MAXIMUM"] = what_df["IDEAL_MAXIMUM"].round(0)
 
         ropmm_excess_parts = what_df[
             what_df.index.isin(ropmm_parts["PART_ID"])
@@ -359,8 +365,8 @@ if uploaded_file:
         ].where(wo_valid, 0)
 
         combined_lt_df["IDEAL_LEAD_TIME"] = (
-            po_numerator + wo_numerator
-        ) / valid_total.replace(0, np.nan)
+            (po_numerator + wo_numerator) / valid_total.replace(0, np.nan)
+        ).round(0)
 
         # Step 4: Accuracy % vs ERP
         combined_lt_df["PO_LT_ACCURACY_PCT"] = np.where(
@@ -451,9 +457,16 @@ if uploaded_file:
         ss_df["IDEAL_SS"] = (
             z_score * ss_df["STD_DEV_CONSUMPTION"] * np.sqrt(ss_df["LEAD_TIME"])
         )
+        ss_df["IDEAL_SS"] = ss_df["IDEAL_SS"].round(0)
+
         ss_df["SS_DEVIATION_QTY"] = ss_df["SAFETY_STOCK"] - ss_df["IDEAL_SS"]
         ss_df["SS_DEVIATION_PCT"] = ss_df["SS_DEVIATION_QTY"] / ss_df["IDEAL_SS"]
-        ss_df["WITHIN_TOLERANCE"] = abs(ss_df["SS_DEVIATION_PCT"]) <= ss_tolerance_pct
+        ss_df["WITHIN_TOLERANCE"] = (
+            (abs(ss_df["SS_DEVIATION_PCT"]) <= ss_tolerance_pct)
+            | ((ss_df["IDEAL_SS"].isna()) & (ss_df["SAFETY_STOCK"] == 0))
+            | ((ss_df["IDEAL_SS"] == 0) & (ss_df["SAFETY_STOCK"].isna()))
+            | ((ss_df["IDEAL_SS"] == 0) & (ss_df["SAFETY_STOCK"] == 0))
+        )
 
         valid_ss_parts = ss_df["IDEAL_SS"].notnull().sum()
         compliant_parts = ss_df["WITHIN_TOLERANCE"].sum()
@@ -537,10 +550,12 @@ if uploaded_file:
         def recommend_planning_method(row):
             cv = row["CV"]
             avg = row["AVG_DAILY_CONSUMPTION"]
+            if pd.isna(avg) or avg == 0:
+                return row["PLANNING_METHOD"]
             if cv >= high_cv_threshold:
                 return "MRP"
             elif avg < low_consumption_threshold or cv <= low_cv_threshold:
-                return "MIN_MAX"
+                return "Min/Max"
             else:
                 return "ROP"
 
@@ -548,7 +563,7 @@ if uploaded_file:
             recommend_planning_method, axis=1
         )
         why_df["PLANNING_METHOD_ACCURATE"] = (
-            why_df["PLANNING_METHOD"].str.upper() == why_df["IDEAL_PLANNING_METHOD"]
+            why_df["PLANNING_METHOD"] == why_df["IDEAL_PLANNING_METHOD"]
         )
 
         scrap_rate_df.index = scrap_rate_df.index.astype(why_df.index.dtype)
@@ -988,10 +1003,10 @@ with tab2:
 
     with st.form("gpt_prompt_form", clear_on_submit=False):
         user_prompt = st.text_input(
-            "Ask a question about shortages, lead time, scrap, safety stock, or late orders:",
+            "Ask a question about the audit results, issues that you are seeing, suggestions for changes, or potential underlying root causes:",
             key="user_prompt_input",
         )
-        submitted = st.form_submit_button("Ask GPT")
+        submitted = st.form_submit_button("Ask the Agent")
 
     if submitted:
         with st.spinner("Thinking..."):
